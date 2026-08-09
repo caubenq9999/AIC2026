@@ -1,0 +1,39 @@
+# --- Môi trường / rác ---
+.venv/
+__pycache__/
+*.pyc
+.vscode/
+*.log
+
+# --- Dữ liệu lớn (KHÔNG push lên GitHub, giới hạn 100MB/file) ---
+image_embeddings.npy
+image_paths.json
+index.faiss
+ocr_index.index
+ocr.json
+metadata_final.csv
+results.zip
+*.zip
+yolov8n.pt
+libvlc.dll
+
+keyframes/
+Keyframes/
+objects/
+vectors/
+beit3_vectors/
+clip-features-32/
+Clip-features-32-L01-L02/
+captions_huy/
+asr_result/
+map-keyframes/
+map-keyframes-b2/
+media-info/
+fine_tuned_model_lora_2025/
+
+# --- Bản sao / thư mục cũ ---
+code/
+AIC_CODE/
+1/
+*.docx
+"ocr_final_results - Copy.json"
