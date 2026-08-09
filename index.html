@@ -1,0 +1,259 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>HỆ THỐNG TRUY XUẤT VIDEO MFusion-VR</title>
+    <link rel="stylesheet" href="style.css">
+    <!-- (THÊM MỚI) API Youtube Player -->
+    <script src="https://www.youtube.com/iframe_api"></script>
+</head>
+<body>
+    <div class="container">
+        <!-- (CẬP NHẬT theo ĐỀ_XUẤT.jpg) Bỏ banner lớn -> thanh tiêu đề mỏng để xem được nhiều frame hơn -->
+        <header class="slim-header">
+            <span class="slim-header-title">MFusion-VR</span>
+            <div class="btc-id-container">
+                <input type="text" id="btc-evaluation-id" placeholder="EVALUATION_ID...">
+                <input type="text" id="btc-session-id" placeholder="SESSION_ID...">
+            </div>
+        </header>
+
+        <!-- (THÊM MỚI theo ĐỀ_XUẤT.jpg) Select box loại câu hỏi (QA/KIS/TRAKE) đặt ở NGOÀI,
+             luôn hiển thị -> không cần bấm vào frame -> lướt xuống -> mới chọn được -->
+        <div class="submission-mode-select-bar">
+            <span class="submission-mode-select-label">Loại câu hỏi:</span>
+            <div class="submission-mode-select">
+                <input type="radio" id="submit-mode-qa" name="submit-mode" value="QA" checked>
+                <label for="submit-mode-qa">QA</label>
+                <input type="radio" id="submit-mode-kis" name="submit-mode" value="KIS">
+                <label for="submit-mode-kis">KIS</label>
+                <input type="radio" id="submit-mode-trake" name="submit-mode" value="TRAKE">
+                <label for="submit-mode-trake">TRAKE</label>
+            </div>
+        </div>
+
+        <!-- (CẬP NHẬT) Bố cục 2 cột -->
+        <div class="main-layout">
+
+            <!-- (CẬP NHẬT) Cột Trái: Input và Kết quả -->
+            <div class="results-column">
+                <div class="input-area">
+                    <div class="main-input">
+                        <!-- Ô nhập text query -->
+                        <textarea id="query-input" placeholder="Nhập câu mô tả (tìm ảnh), từ khóa (tìm chữ), hoặc câu hội thoại (tìm lời)..."></textarea>
+
+                        <!-- (CẬP NHẬT) Query Expansion: bấm nút -> hiện 3 lựa chọn -> bấm chọn 1 cái để search
+                             (trước đây là checkbox tự động search cả 3 gộp lại, không biết đã tìm bằng câu gì) -->
+                        <div id="query-expansion-box" class="query-expansion-box hidden">
+                            <button type="button" id="expand-query-button">🔎 Mở rộng câu truy vấn</button>
+                            <div id="query-expansion-options" class="query-expansion-options hidden"></div>
+                        </div>
+
+                        <!-- (THÊM MỚI) TRAKE: mỗi sự kiện một ô riêng, thêm/xóa được (thay cho việc
+                             gõ tất cả vào 1 ô rồi ngăn bằng dấu ';') -->
+                        <div id="trake-input-area" class="trake-input-area hidden">
+                            <div class="trake-input-header">
+                                <span class="trake-input-title">Chuỗi sự kiện — theo đúng thứ tự thời gian trong video</span>
+                                <div class="trake-header-controls">
+                                    <label for="trake-max-gap-input" title="2 sự kiện liên tiếp cách nhau quá ngưỡng này sẽ bị trừ điểm nặng, để loại các chuỗi ghép từ những cảnh rời rạc trong cùng video">Cách nhau tối đa:</label>
+                                    <input type="number" id="trake-max-gap-input" value="30" min="0" max="600" step="5">
+                                    <span class="trake-header-unit">giây</span>
+                                    <button type="button" id="trake-add-event-button">+ Thêm sự kiện</button>
+                                </div>
+                            </div>
+                            <div id="trake-event-rows"></div>
+                        </div>
+
+                        <!-- (THÊM MỚI) 3 ô riêng cho Fusion (CLIP/OCR/ASR) + tỷ lệ trọng số -->
+                        <div id="fusion-input-area" class="fusion-input-area hidden">
+                            <div class="fusion-input-row">
+                                <label for="fusion-query-clip">🖼️ CLIP <span class="fusionsearch-weight-pct" id="fusionsearch-weight-clip-pct">33%</span></label>
+                                <input type="text" id="fusion-query-clip" class="fusion-query-input" placeholder="Mô tả cảnh (sẽ tự dịch sang tiếng Anh nếu bật 'Tự động dịch')...">
+                                <input type="range" id="fusionsearch-weight-clip" class="fusionsearch-weight-slider" min="0" max="100" value="50">
+                            </div>
+                            <div class="fusion-input-row">
+                                <label for="fusion-query-ocr">🔤 OCR <span class="fusionsearch-weight-pct" id="fusionsearch-weight-ocr-pct">33%</span></label>
+                                <input type="text" id="fusion-query-ocr" class="fusion-query-input" placeholder="Từ khoá xuất hiện trên màn hình (tiếng Việt)...">
+                                <input type="range" id="fusionsearch-weight-ocr" class="fusionsearch-weight-slider" min="0" max="100" value="50">
+                            </div>
+                            <div class="fusion-input-row">
+                                <label for="fusion-query-asr">🎙️ ASR <span class="fusionsearch-weight-pct" id="fusionsearch-weight-asr-pct">33%</span></label>
+                                <input type="text" id="fusion-query-asr" class="fusion-query-input" placeholder="Từ khoá/câu nói trong lời thoại (tiếng Việt)...">
+                                <input type="range" id="fusionsearch-weight-asr" class="fusionsearch-weight-slider" min="0" max="100" value="50">
+                            </div>
+                            <label class="fusion-sync-label">
+                                <input type="checkbox" id="fusion-sync-checkbox">
+                                Đồng bộ nội dung 3 ô (gõ 1 ô, tự điền 2 ô còn lại) — mặc định TẮT vì CLIP/OCR/ASR nên có nội dung khác nhau
+                            </label>
+                        </div>
+
+                        <!-- (THÊM MỚI) Khu vực tải ảnh (cho Similar Search) -->
+                        <div id="image-upload-area" class="image-upload-area hidden">
+                            <input type="file" id="image-upload-input" accept="image/*">
+                            <label for="image-upload-input" class="image-upload-label">Chọn ảnh để tìm</label>
+                            <img id="image-preview" src="" class="hidden" alt="Ảnh xem trước"/>
+                            <!-- (THÊM MỚI) Toggle Auto-Crop bằng YOLOv8n -->
+                            <div class="auto-crop-box">
+                                <input type="checkbox" id="auto-crop-checkbox">
+                                <label for="auto-crop-checkbox">🎯 Auto-Crop vật thể (YOLOv8n)</label>
+                            </div>
+                            <!-- (THÊM MỚI) Thanh trượt fusion CLIP <-> BEIT3 (fine-grained) -->
+                            <div class="fusion-weight-box">
+                                <label for="beit3-weight-slider">
+                                    Fusion: CLIP <span id="fusion-weight-clip">100%</span>
+                                    ↔ BEIT3 <span id="fusion-weight-beit3">0%</span>
+                                </label>
+                                <input type="range" id="beit3-weight-slider" min="0" max="100" value="100">
+                            </div>
+                        </div>
+                        <div id="multi-image-upload-area" class="image-upload-area hidden">
+                            <input type="file" id="multi-image-upload-input" multiple accept="image/*">
+                            <label for="multi-image-upload-input" class="image-upload-label">Chọn nhiều ảnh (ít nhất 2) để tìm giao</label>
+                            <div id="multi-image-preview" class="multi-preview-container hidden"></div>
+                        </div>
+                        <div class="controls">
+                            <div class="search-mode-box">
+                                <input type="radio" id="mode-semantic" name="search-mode" value="semantic" checked>
+                                <label for="mode-semantic">Tìm Ảnh (Semantic)</label>
+                                <input type="radio" id="mode-ocr" name="search-mode" value="ocr">
+                                <label for="mode-ocr">Tìm Chữ (OCR)</label>
+                                <input type="radio" id="mode-asr" name="search-mode" value="asr">
+                                <label for="mode-asr">Tìm Lời (ASR)</label>
+                                <input type="radio" id="mode-fusion" name="search-mode" value="fusion">
+                                <label for="mode-fusion" title="Gộp CLIP + OCR + ASR bằng Reciprocal Rank Fusion">Tìm Gộp (Fusion)</label>
+                                <!-- (THÊM MỚI) Nút Similar Search -->
+                                <input type="radio" id="mode-similar" name="search-mode" value="similar">
+                                <label for="mode-similar">Tìm Ảnh (Tương tự)</label>
+                                <input type="radio" id="mode-trake-02" name="search-mode" value="trake-02">
+                                <label for="mode-trake-02" title="Tìm video chứa cả chuỗi sự kiện theo đúng thứ tự thời gian, rồi tự căn mỗi sự kiện về 1 keyframe">TRAKE (Chuỗi sự kiện)</label>
+                                <input type="radio" id="mode-trake-image" name="search-mode" value="trake-image">
+                                <label for="mode-trake-image">Tìm Giao Ảnh (Trake.Image)</label>
+                            </div>
+                            <div class="control-options">
+                                <div class="top-k-box">
+                                    <label for="top-k-input">Số kết quả:</label>
+                                    <input type="number" id="top-k-input" value="100" min="1" max="500">
+                                </div>
+                                <!-- THÊM MỚI Nới khung hình (cho TRAKE) -->
+                                <div class="window-size-box hidden" style="margin-left:10px;">
+                                    <label for="window-size-input">Nới khung (± frames):</label>
+                                    <input type="number" id="window-size-input" value="5" min="0" max="50">
+                                </div>
+                                <div class="translate-box">
+                                    <input type="checkbox" id="translate-checkbox" checked>
+                                    <label for="translate-checkbox">Tự động dịch (VI → EN)</label>
+                                </div>
+                                <!-- (THÊM MỚI) Checkbox Group Search -->
+                                <div class="group-box">
+                                    <input type="checkbox" id="group-results-checkbox">
+                                    <label for="group-results-checkbox">Nhóm kết quả theo video</label>
+                                </div>
+                            </div>
+                            <button id="search-button">Tìm kiếm</button>
+                        </div>
+                    </div>
+                    <div id="summary-box"></div>
+                </div>
+
+                <div id="status-message"></div>
+
+                <!-- Khu vực hiển thị kết quả (Ảnh hoặc ASR) -->
+                <div id="image-container" class="image-display-area">
+                    <!-- Grid cho Single Search sẽ được tạo bởi JS -->
+                    <div id="single-search-grid"></div> 
+                </div>
+
+                <div id="asr-container" class="asr-display-area hidden">
+                    <!-- Kết quả ASR sẽ được thêm vào đây -->
+                </div>
+            </div>
+
+            <!-- (CẬP NHẬT) Cột Phải: Các Panel -->
+            <div class="panels-column">
+
+                <!-- 1. Video Player -->
+                <div id="video-player-area" class="video-player-container hidden">
+                    <button id="close-video-player" class="close-button">×</button>
+                    <h3 id="video-player-title"></h3>
+                    <!-- (CẬP NHẬT) <div> này sẽ được API Youtube thay thế -->
+                    <div id="youtube-player"></div>
+                    
+                    <!-- (THÊM MỚI) Panel Thời gian thực -->
+                    <div id="real-time-panel" class="real-time-panel hidden">
+                        <h4>Thông tin thời gian thực</h4>
+                        <p>Video ID: <strong id="realtime-video-id">N/A</strong></p>
+                        <p>Thời gian (Giây): <strong id="current-video-time">0.00</strong></p>
+                        <p>Frame Index (Ước tính): <strong id="current-frame-index">N/A</strong></p>
+                    </div>
+                </div>
+
+                <!-- 2. Bảng Nộp Đáp Án -->
+                <div id="submission-panel" class="submission-panel hidden">
+                    <button id="close-submission-panel" class="close-button">×</button>
+                    <h4>Nộp Đáp Án <span class="submission-mode-badge" id="submission-mode-badge">QA</span></h4>
+                    <!-- (CẬP NHẬT theo ĐỀ_XUẤT.jpg) Chọn chế độ (QA/KIS/TRAKE) đã chuyển ra
+                         thanh .submission-mode-select-bar ở đầu trang, luôn hiển thị. -->
+
+                    <!-- UI cho QA -->
+                    <div id="qa-mode-ui" class="submission-ui">
+                        <p>Video: <span class="submission-video-id">N/A</span> | Thời gian: <span class="submission-time">N/A</span></p>
+                        <input type="text" id="qa-answer-input" placeholder="Nhập câu trả lời (Answer)...">
+                    </div>
+
+                    <!-- UI cho KIS -->
+                    <div id="kis-mode-ui" class="submission-ui ">
+                        <p>Video: <span class="submission-video-id">N/A</span></p>
+                        <button id="kis-click-button">Click (Set Start)</button>
+                        <button id="kis-reset-button">Reset</button>
+                        <div class="manual-kis-area">
+                            <input type="number" id="kis-manual-start-input" placeholder="Nhập Start (giây)..."/>
+                            <input type="number" id="kis-manual-end-input" placeholder="Nhập End (giây)..."/>
+                            <button id="kis-manual-set-button">Set (Manual)</button>
+                        </div>
+                        <p>Start Time: <span id="kis-start-time">N/A</span></p>
+                        <p>End Time: <span id="kis-end-time">N/A</span></p>
+                    </div>
+
+                    <!-- UI cho TRAKE -->
+                    <div id="trake-mode-ui" class="submission-ui ">
+                        <p>Video: <span class="submission-video-id">N/A</span> | Frame Index: <span class="submission-frame-idx">N/A</span></p>
+                        <button id="trake-click-button">Click (Add Frame)</button>
+                        <button id="trake-undo-button">Undo</button>
+                        <div class="manual-trake-area">
+                            <input type="number" id="trake-manual-frame-input" placeholder="Nhập Frame Index..."/>
+                            <button id="trake-manual-add-button">Add (Manual)</button>
+                        </div>
+                        <p>Frames: <span id="trake-frames-list">[]</span></p>
+                    </div>
+
+                    <button id="submit-answer-button">Submit</button>
+                    <pre id="submission-log"></pre>
+                </div>
+                
+                <!-- 3. Chi tiết ảnh -->
+                <div id="image-detail" class="detail-info-area hidden">
+                    <button id="close-detail" class="close-button">×</button>
+                    <img id="detail-image" src="" />
+                    <h3>Thông tin ảnh:</h3>
+                    <p><strong>Tên video:</strong> <span id="video-name"></span></p>
+                    <p><strong>Frame (n):</strong> <span id="meta-n"></span></p>
+                    <p><strong>Thời gian (giây):</strong> <span id="meta-pts"></span></p>
+                    <p><strong>Index (frame_idx):</strong> <span id="meta-idx"></span></p>
+                    <p><strong>Link video:</strong> <span id="no-video-link" style="display: inline;">Không có</span></p>
+                    <div id="neighbor-frames">
+                        <h4>Các frame lân cận:</h4>
+                        <div class="neighbor-controls">
+                            <div id="neighbor-thumbnails"></div>
+                        </div>
+                    </div>
+                </div>
+
+            </div> <!-- Kết thúc Cột Phải -->
+        </div> <!-- Kết thúc Bố cục Chính -->
+    </div> <!-- Kết thúc Container -->
+
+    <script src="script.js"></script>
+</body>
+</html>
+
