@@ -52,8 +52,10 @@ import torch
 import requests
 import numpy as np
 import json
+import csv
+import zipfile
 # pyrefly: ignore [missing-import]
-from flask import Flask, request, jsonify, send_from_directory, g, abort
+from flask import Flask, request, jsonify, send_from_directory, send_file, g, abort
 import gc
 from retrieval_data import (
     load_asr_metadata,
@@ -194,8 +196,7 @@ if OCR_TEXT_DIR.is_dir() and not ocr_text_is_embedded:
         f"{OCR_TEXT_DIR}: {ocr_overlay_stats['rows']:,} rows / "
         f"{ocr_overlay_stats['files']} shards "
         f"({ocr_overlay_stats['blank_texts']:,} blank; "
-        f"filtered {ocr_overlay_stats['filtered_logo_lines']:,} logo lines + "
-        f"{ocr_overlay_stats['filtered_ticker_lines']:,} ticker lines in L21/L22)."
+        f"filtered {ocr_overlay_stats['filtered_ticker_lines']:,} ticker lines in L21/L22)."
     )
 else:
     if ocr_text_is_embedded:
@@ -357,7 +358,7 @@ def get_neighbor_frame_ids(video_id, frame_id, radius):
 # === (THÊM MỚI) QUERY EXPANSION (Groq) - Theo "[AIC2026] - Query expansion.docx", PLAN A ===
 QUERY_EXPANSION_PROMPT_TEMPLATE = """Bạn là chuyên gia viết truy vấn cho mô hình Jina đa phương thức trong bài toán Video Information Retrieval.
 
-Nhiệm vụ: Chuyển câu truy vấn tiếng Việt thành 3 biến thể tiếng Anh giàu chi tiết thị giác để đối chiếu với cả ảnh và caption tiếng Anh bằng Jina.
+Nhiệm vụ: Chuyển câu truy vấn tiếng Việt thành 3 biến thể tiếng Việt giàu chi tiết thị giác để đối chiếu với cả ảnh và caption tiếng Anh bằng Jina.
 
 QUY TẮC BẮT BỘC:
 1. LOẠI BỎ TỪ KHÔNG CÓ HÌNH ẢNH: Bỏ các từ chỉ cảm xúc ("vui vẻ", "thanh mát"), từ chỉ nhiệm vụ ("làm nhiệm vụ", "nghiên cứu"), địa danh chung chung ("miền Nam", "miền Tây").
@@ -1606,8 +1607,229 @@ def submit_answer():
         print(f"Lỗi khi xử lý /submit_answer: {e}")
         return jsonify({"status": "error", "message": str(e), "btc_response": None}), 500
 
+
+# --- VÒNG SƠ TUYỂN AIC26: resolve frame thật và xuất submission.zip ---
+SUBMISSION_QUERY_ID_PATTERN = re.compile(
+    r"^[A-Za-z0-9][A-Za-z0-9_-]{0,127}-(kis|qa|trake)$",
+    re.IGNORECASE,
+)
+
+
+def _submission_query_name(raw_name):
+    name = str(raw_name or "").strip()
+    if name.lower().endswith((".txt", ".csv")):
+        name = name.rsplit(".", 1)[0]
+    match = SUBMISSION_QUERY_ID_PATTERN.fullmatch(name)
+    if not match:
+        raise ValueError(
+            f"Tên query không hợp lệ: {name!r}; tên phải kết thúc bằng -kis, -qa hoặc -trake."
+        )
+    return name, match.group(1).lower()
+
+
+@app.route('/submission/resolve_candidates', methods=['POST'])
+def resolve_submission_candidates():
+    """Map kết quả retrieval về frame_idx thật trước khi đưa vào CSV."""
+    try:
+        payload = request.get_json() or {}
+        candidates = payload.get("candidates")
+        if not isinstance(candidates, list):
+            raise ValueError("candidates phải là một JSON array.")
+        if len(candidates) > 1000:
+            raise ValueError("Chỉ resolve tối đa 1.000 candidates mỗi request.")
+
+        resolved = []
+        errors = []
+        for position, candidate in enumerate(candidates):
+            if not isinstance(candidate, dict):
+                errors.append({"index": position, "error": "Candidate không phải object."})
+                continue
+
+            video_id = str(
+                candidate.get("videoId") or candidate.get("video_id") or ""
+            ).upper()
+            frame_n = candidate.get("frame_n")
+            path = candidate.get("path") or candidate.get("web_path")
+
+            if path:
+                web_path, parsed_video_id, parsed_frame_n = get_web_path(path)
+                if web_path:
+                    path = web_path
+                if parsed_video_id and parsed_video_id != "N/A":
+                    video_id = parsed_video_id
+                if parsed_frame_n is not None:
+                    frame_n = int(parsed_frame_n)
+
+            meta = None
+            if video_id in metadata_cache and frame_n is not None:
+                meta = metadata_cache[video_id].get(int(frame_n))
+
+            frame_idx = meta.get("frame_idx") if meta else candidate.get("frame_idx")
+            if not video_id or frame_idx is None:
+                errors.append({
+                    "index": position,
+                    "error": "Không map được video_id/frame_idx.",
+                })
+                continue
+
+            resolved.append({
+                "videoId": video_id,
+                "frameIdx": int(frame_idx),
+                "path": (meta or {}).get("path") or path,
+                "score": float(candidate.get("score", 0) or 0),
+            })
+
+        return jsonify({"resolved": resolved, "errors": errors})
+    except (TypeError, ValueError) as exc:
+        return jsonify({"error": str(exc)}), 400
+
+
+@app.route('/submission/playback', methods=['POST'])
+def resolve_submission_playback():
+    """Return the video URL nearest to a submitted frame_idx."""
+    try:
+        payload = request.get_json() or {}
+        video_id = str(payload.get("videoId") or "").upper()
+        frame_idx = int(payload.get("frameIdx"))
+        video_records = metadata_cache.get(video_id)
+        if not video_records:
+            raise ValueError(f"Không tìm thấy video {video_id!r}.")
+
+        closest = min(
+            video_records.values(),
+            key=lambda record: abs(int(record.get("frame_idx", 0)) - frame_idx),
+        )
+        pts_time = float(closest.get("pts_time", 0) or 0)
+        watch_url = video_url_cache.get(video_id)
+        if watch_url:
+            separator = '&' if '?' in watch_url else '?'
+            playback_url = f"{watch_url}{separator}t={int(pts_time)}s"
+        else:
+            playback_url = None
+
+        return jsonify({
+            "videoId": video_id,
+            "requestedFrameIdx": frame_idx,
+            "frameIdx": int(closest.get("frame_idx", 0)),
+            "pts_time": pts_time,
+            "path": closest.get("path"),
+            "playback_url": playback_url,
+        })
+    except (TypeError, ValueError) as exc:
+        return jsonify({"error": str(exc)}), 400
+
+
+@app.route('/submission/export', methods=['POST'])
+def export_preliminary_submission():
+    """Validate ordered rows and return a ZIP containing submission/*.csv."""
+    try:
+        payload = request.get_json() or {}
+        queries = payload.get("queries")
+        if not isinstance(queries, list) or not queries:
+            raise ValueError("Chưa có query nào để xuất.")
+
+        archive_buffer = io.BytesIO()
+        used_names = set()
+        with zipfile.ZipFile(
+            archive_buffer, "w", compression=zipfile.ZIP_DEFLATED
+        ) as archive:
+            for query in queries:
+                if not isinstance(query, dict):
+                    raise ValueError("Mỗi query phải là một object.")
+                query_name, inferred_type = _submission_query_name(query.get("id"))
+                query_type = str(query.get("type") or inferred_type).strip().lower()
+                if query_type != inferred_type:
+                    raise ValueError(
+                        f"Loại {query_type!r} không khớp tên file {query_name!r}."
+                    )
+                normalized_name = query_name.lower()
+                if normalized_name in used_names:
+                    raise ValueError(f"Trùng query: {query_name}.")
+                used_names.add(normalized_name)
+
+                rows = query.get("rows")
+                if not isinstance(rows, list) or not rows:
+                    raise ValueError(f"{query_name} chưa có kết quả.")
+                if len(rows) > 100:
+                    raise ValueError(f"{query_name} vượt quá 100 dòng.")
+
+                event_count = int(query.get("eventCount") or 0)
+                output = io.StringIO(newline="")
+                writer = csv.writer(output, lineterminator="\n")
+                seen_rows = set()
+                for row_number, row in enumerate(rows, start=1):
+                    if not isinstance(row, dict):
+                        raise ValueError(f"{query_name} dòng {row_number} không hợp lệ.")
+                    video_id = str(row.get("videoId") or "").upper()
+                    if not re.fullmatch(r"L\d{2}_V\d+", video_id):
+                        raise ValueError(
+                            f"{query_name} dòng {row_number}: video ID không hợp lệ."
+                        )
+
+                    if query_type in {"kis", "qa"}:
+                        frame_idx = int(row.get("frameIdx"))
+                        csv_row = [video_id, frame_idx]
+                        if query_type == "qa":
+                            answer = str(row.get("answer") or "")
+                            if not answer:
+                                raise ValueError(
+                                    f"{query_name} dòng {row_number}: thiếu answer."
+                                )
+                            if len(answer) > 100:
+                                raise ValueError(
+                                    f"{query_name} dòng {row_number}: answer vượt 100 ký tự."
+                                )
+                            csv_row.append(answer)
+                    else:
+                        frame_indices = row.get("frameIndices")
+                        if not isinstance(frame_indices, list):
+                            raise ValueError(
+                                f"{query_name} dòng {row_number}: thiếu danh sách frame TRAKE."
+                            )
+                        frame_indices = [int(value) for value in frame_indices]
+                        if event_count < 2 or len(frame_indices) != event_count:
+                            raise ValueError(
+                                f"{query_name} dòng {row_number}: cần đúng {event_count} frames."
+                            )
+                        if any(
+                            current <= previous
+                            for previous, current in zip(frame_indices, frame_indices[1:])
+                        ):
+                            raise ValueError(
+                                f"{query_name} dòng {row_number}: frames phải tăng theo thời gian."
+                            )
+                        csv_row = [video_id, *frame_indices]
+
+                    row_key = tuple(csv_row)
+                    if row_key in seen_rows:
+                        raise ValueError(f"{query_name} có dòng trùng: {csv_row}.")
+                    seen_rows.add(row_key)
+                    writer.writerow(csv_row)
+
+                archive.writestr(
+                    f"submission/{query_name}.csv",
+                    output.getvalue().encode("utf-8"),
+                )
+
+        archive_buffer.seek(0)
+        return send_file(
+            archive_buffer,
+            mimetype="application/zip",
+            as_attachment=True,
+            download_name="submission.zip",
+        )
+    except (TypeError, ValueError) as exc:
+        return jsonify({"error": str(exc)}), 400
+
 # --- Các hàm phục vụ file tĩnh ---
-PUBLIC_STATIC_FILES = {"style.css", "script.js", "logo_wud.jpg"}
+PUBLIC_STATIC_FILES = {
+    "style.css",
+    "script.js",
+    "logo_wud.jpg",
+    "submission-builder.css",
+    "submission-builder.js",
+    "submission-store.js",
+}
 
 
 @app.route('/health', methods=['GET'])
@@ -1632,6 +1854,9 @@ def health():
 
 @app.route('/')
 def serve_index(): return send_from_directory(str(BASE_DIR), 'index.html')
+@app.route('/submission-builder')
+def serve_submission_builder():
+    return send_from_directory(str(BASE_DIR), 'submission-builder.html')
 @app.route('/<path:path>')
 def serve_static(path):
     if path not in PUBLIC_STATIC_FILES:

@@ -27,7 +27,13 @@ def build_filtered_metadata(
         raise FileNotFoundError(f"Không tìm thấy metadata source: {metadata_dir}")
 
     retrieval = load_retrieval_data(metadata_dir, keyframes_dir)
-    stats = overlay_ocr_jsonl(ocr_text_dir, retrieval.image_records)
+    # Cho phép rebuild riêng L21/L22 trên nền artifact hiện tại; mọi collection
+    # không có JSONL trong input được giữ nguyên ocr_text từ metadata source.
+    stats = overlay_ocr_jsonl(
+        ocr_text_dir,
+        retrieval.image_records,
+        require_all_records=False,
+    )
     text_by_index = {
         int(record["idx"]): str(record.get("ocr_text") or "")
         for record in retrieval.image_records
@@ -100,10 +106,13 @@ def build_filtered_metadata(
     print(f"Kích thước: {output_zip.stat().st_size / (1024 ** 2):.2f} MiB")
     print(f"Metadata JSON: {len(json_paths):,} files")
     print(f"Records: {len(validated.image_records):,}")
-    print(f"OCR rỗng: {stats['blank_texts']:,}")
+    total_blank_texts = sum(
+        not record.get("ocr_text", "").strip()
+        for record in validated.image_records
+    )
+    print(f"OCR rỗng toàn bộ metadata: {total_blank_texts:,}")
     print(
         "Đã lọc L21/L22: "
-        f"{stats['filtered_logo_lines']:,} logo lines, "
         f"{stats['filtered_ticker_lines']:,} ticker lines, "
         f"{stats['removed_text_segments']:,} text segments"
     )
@@ -114,7 +123,7 @@ def main() -> None:
     parser.add_argument(
         "--metadata-dir",
         type=Path,
-        default=REPO_ROOT / "ocr" / "metadata_ocr",
+        default=REPO_ROOT / "ocr" / "metadata_ocr_filtered",
     )
     parser.add_argument(
         "--ocr-text-dir",

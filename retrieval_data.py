@@ -18,10 +18,9 @@ import zipfile
 
 VIDEO_ID_PATTERN = re.compile(r"^[A-Z]\d{2}_V\d+$", re.IGNORECASE)
 OCR_OVERLAY_FILTER_COLLECTIONS = {"L21", "L22"}
-OCR_LOGO_BBOXES = (
-    (1056, 64, 1143, 90),
-    (1056, 63, 1144, 91),
-)
+# L21/L22 dùng layout bản tin 1280x720. Ticker nhiễu là dải ngang sát đáy,
+# vì vậy chỉ xét trục Y và mặc định phủ toàn bộ chiều rộng frame.
+OCR_BOTTOM_TICKER_Y_MIN = 640.0
 
 
 @dataclass(slots=True)
@@ -250,6 +249,7 @@ def load_asr_metadata(asr_dir: str | Path):
 def overlay_ocr_jsonl(
     ocr_dir: str | Path,
     image_records: list[dict],
+    require_all_records: bool = True,
 ) -> dict[str, int]:
     """Replace ``ocr_text`` using collection-level OCR JSONL files.
 
@@ -276,8 +276,8 @@ def overlay_ocr_jsonl(
         record_by_key[key] = record
 
     seen: set[tuple[str, int]] = set()
+    source_collections = {path.stem.upper() for path in jsonl_paths}
     blank_texts = 0
-    filtered_logo_lines = 0
     filtered_ticker_lines = 0
     removed_text_segments = 0
     for jsonl_path in jsonl_paths:
@@ -320,20 +320,14 @@ def overlay_ocr_jsonl(
                         ):
                             continue
 
-                        is_logo = any(
-                            all(abs(float(value) - target) <= 15 for value, target in zip(bbox, target_bbox))
-                            for target_bbox in OCR_LOGO_BBOXES
-                        )
-                        # L21/L22 có news ticker chạy ngang sát đáy khung hình.
-                        # Nội dung thuộc tin khác, trong khi headline chính nằm
-                        # phía trên (thường kết thúc quanh y=644).
-                        is_bottom_ticker = float(bbox[1]) >= 645 and float(bbox[3]) >= 680
-                        if is_logo or is_bottom_ticker:
+                        y1, y2 = float(bbox[1]), float(bbox[3])
+                        center_y = (y1 + y2) / 2.0
+                        # Full-width bottom band: không xét x1/x2, nên ticker
+                        # vẫn bị loại khi OCR chia thành nhiều bbox ngắn.
+                        is_bottom_ticker = center_y >= OCR_BOTTOM_TICKER_Y_MIN
+                        if is_bottom_ticker:
                             filtered_segments[line_text] += 1
-                            if is_logo:
-                                filtered_logo_lines += 1
-                            if is_bottom_ticker:
-                                filtered_ticker_lines += 1
+                            filtered_ticker_lines += 1
 
                     if filtered_segments and text:
                         kept_segments = []
@@ -350,7 +344,15 @@ def overlay_ocr_jsonl(
                     blank_texts += 1
                 seen.add(key)
 
-    missing = set(record_by_key) - seen
+    if require_all_records:
+        required_keys = set(record_by_key)
+    else:
+        required_keys = {
+            key
+            for key in record_by_key
+            if key[0].split("_", 1)[0] in source_collections
+        }
+    missing = required_keys - seen
     if missing:
         preview = ", ".join(f"{video}/{frame:06d}" for video, frame in sorted(missing)[:5])
         raise ValueError(
@@ -361,7 +363,6 @@ def overlay_ocr_jsonl(
         "files": len(jsonl_paths),
         "rows": len(seen),
         "blank_texts": blank_texts,
-        "filtered_logo_lines": filtered_logo_lines,
         "filtered_ticker_lines": filtered_ticker_lines,
         "removed_text_segments": removed_text_segments,
     }

@@ -12,6 +12,7 @@ let kisStartTime = null;
 let trakeFrames = [];
 // (FIX) Biến global cho searchMode để dùng trong display functions
 let currentSearchMode = ''; // (THÊM MỚI) Global để tránh lỗi "not defined"
+let latestSearchResponse = null; // Giữ ranking đang hiển thị để gắn vào query vừa tạo/chọn.
 const API_BASE_URL = window.location.protocol === 'file:'
     ? 'http://localhost:5000'
     : window.location.origin;
@@ -145,6 +146,10 @@ document.addEventListener('DOMContentLoaded', () => {
     const submissionPanel = document.getElementById('submission-panel');
     const submissionLog = document.getElementById('submission-log');
     const submitAnswerButton = document.getElementById('submit-answer-button');
+    // Vòng sơ tuyển: chỉ để một cầu nối nhỏ trên trang search; quản lý CSV ở trang riêng.
+    const prelimActiveQuerySelect = document.getElementById('prelim-active-query');
+    const prelimPinnedCount = document.getElementById('prelim-pinned-count');
+    const prelimPinCurrentFrame = document.getElementById('prelim-pin-current-frame');
 
     // (SỬA LỖI) Nút X của Submission Panel (thêm vào)
     const closeSubmissionPanelButton = document.getElementById('close-submission-panel');
@@ -174,6 +179,250 @@ document.addEventListener('DOMContentLoaded', () => {
     // === KẾT THÚC DOM MỚI ===
     let currentNeighborPaths = [];
     let currentDetailPath = "";
+
+    function getActivePrelimQuery(state = PrelimSubmission.load()) {
+        return state.queries[state.activeQueryId] || null;
+    }
+
+    function refreshPrelimHeader() {
+        const state = PrelimSubmission.load();
+        const previousValue = state.activeQueryId;
+        prelimActiveQuerySelect.innerHTML = '';
+
+        const emptyOption = document.createElement('option');
+        emptyOption.value = '';
+        emptyOption.textContent = 'Chưa có query · bấm Bài nộp để tạo';
+        prelimActiveQuerySelect.appendChild(emptyOption);
+
+        Object.values(state.queries)
+            .sort((a, b) => a.id.localeCompare(b.id, undefined, { numeric: true }))
+            .forEach(query => {
+                const option = document.createElement('option');
+                option.value = query.id;
+                option.textContent = `${query.id} · ${query.type.toUpperCase()}`;
+                prelimActiveQuerySelect.appendChild(option);
+            });
+
+        prelimActiveQuerySelect.value = state.queries[previousValue] ? previousValue : '';
+        prelimPinnedCount.textContent = String(PrelimSubmission.totalPinned(state));
+    }
+
+    function requireActivePrelimQuery(expectedType = null) {
+        const state = PrelimSubmission.load();
+        const query = getActivePrelimQuery(state);
+        if (!query) {
+            alert('Hãy tạo và chọn query ở trang “Bài nộp” trước.');
+            return null;
+        }
+        if (expectedType && query.type !== expectedType) {
+            alert(`Query đang chọn là ${query.type.toUpperCase()}, không nhận kết quả ${expectedType.toUpperCase()}.`);
+            return null;
+        }
+        return { state, query };
+    }
+
+    function addPinnedCandidate(candidate, expectedType) {
+        const active = requireActivePrelimQuery(expectedType);
+        if (!active) return false;
+        const { state, query } = active;
+        const key = PrelimSubmission.candidateKey(query.type, candidate);
+        const exists = (query.pinned || []).some(
+            item => PrelimSubmission.candidateKey(query.type, item) === key
+        );
+        if (exists) return true;
+        if ((query.pinned || []).length >= 100) {
+            alert('Query này đã có đủ 100 kết quả ghim.');
+            return false;
+        }
+        // Nếu query vừa được tạo sau lần search, nhận luôn pool chung đang lưu.
+        if (!(query.pool || []).length) {
+            const latestPool = query.type === 'trake'
+                ? state.latestPools?.trake
+                : state.latestPools?.frame;
+            if (Array.isArray(latestPool) && latestPool.length) {
+                query.pool = latestPool.slice();
+                if (query.type === 'trake' && state.latestPools.trakeEventCount >= 2) {
+                    query.eventCount = state.latestPools.trakeEventCount;
+                }
+            }
+        }
+        query.pinned = [...(query.pinned || []), candidate];
+        query.automatic = (query.automatic || []).filter(
+            item => PrelimSubmission.candidateKey(query.type, item) !== key
+        );
+        PrelimSubmission.save(state);
+        refreshPrelimHeader();
+        return true;
+    }
+
+    async function resolveFrameCandidates(candidates) {
+        const response = await fetch(`${API_BASE_URL}/submission/resolve_candidates`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ candidates })
+        });
+        const data = await response.json();
+        if (!response.ok || data.error) throw new Error(data.error || 'Không map được frame_idx.');
+        return data.resolved || [];
+    }
+
+    async function pinCurrentFrameToPrelim() {
+        const active = requireActivePrelimQuery();
+        if (!active) return;
+        if (active.query.type === 'trake') {
+            alert('TRAKE cần ghim cả chuỗi sự kiện từ kết quả TRAKE, không ghim một frame đơn.');
+            return;
+        }
+        if (!currentDetailPath) {
+            alert('Chưa chọn frame nào.');
+            return;
+        }
+
+        prelimPinCurrentFrame.disabled = true;
+        const originalText = prelimPinCurrentFrame.textContent;
+        prelimPinCurrentFrame.textContent = 'Đang map frame_idx...';
+        try {
+            const videoId = document.getElementById('video-name').textContent.trim();
+            const resolved = await resolveFrameCandidates([{
+                videoId,
+                path: currentDetailPath,
+                score: 0
+            }]);
+            if (!resolved.length) throw new Error('Không tìm thấy frame_idx thật trong metadata.');
+            if (addPinnedCandidate(resolved[0], active.query.type)) {
+                prelimPinCurrentFrame.textContent = '✓ Đã ghim lên đầu';
+                setTimeout(() => { prelimPinCurrentFrame.textContent = originalText; }, 1300);
+            }
+        } catch (error) {
+            alert(`Không ghim được frame: ${error.message}`);
+            prelimPinCurrentFrame.textContent = originalText;
+        } finally {
+            prelimPinCurrentFrame.disabled = false;
+        }
+    }
+
+    function pinTrakeSequence(seq, buttonElement) {
+        const frameIndices = (seq.events || []).map(event => event.frame_idx);
+        if (frameIndices.some(value => value === null || value === undefined)) {
+            alert('Chuỗi này thiếu frame_idx nên chưa thể đưa vào CSV.');
+            return;
+        }
+        const candidate = {
+            videoId: seq.videoId,
+            frameIndices: frameIndices.map(Number),
+            paths: (seq.events || []).map(event => event.path || null),
+            score: Number(seq.score || 0)
+        };
+        if (addPinnedCandidate(candidate, 'trake')) {
+            const oldText = buttonElement.textContent;
+            buttonElement.textContent = '✓ Đã ghim lên đầu';
+            setTimeout(() => { buttonElement.textContent = oldText; }, 1300);
+        }
+    }
+
+    async function captureLatestSearchPool(data) {
+        const stateAtSearch = PrelimSubmission.load();
+        const queryId = stateAtSearch.activeQueryId;
+        const query = stateAtSearch.queries[queryId];
+        if (!data || !data.results) return;
+
+        let pool = [];
+        let detectedEventCount = 0;
+        const isTrakePool = data.mode === 'trake_temporal';
+        if (isTrakePool) {
+            detectedEventCount = Array.isArray(data.events_query)
+                ? data.events_query.length
+                : 0;
+            pool = (data.results || []).map(sequence => ({
+                videoId: sequence.videoId,
+                frameIndices: (sequence.events || []).map(event => event.frame_idx),
+                paths: (sequence.events || []).map(event => event.path || null),
+                score: Number(sequence.score || 0)
+            })).filter(candidate =>
+                candidate.frameIndices.length === detectedEventCount
+                && candidate.frameIndices.every(value => value !== null && value !== undefined)
+            );
+        } else {
+            const rawItems = Array.isArray(data.results)
+                ? data.results
+                : Object.values(data.results).flat();
+            rawItems.sort((a, b) => Number(b.score || 0) - Number(a.score || 0));
+            pool = rawItems.map(item => ({
+                videoId: item.videoId || item.video_id,
+                path: item.path || item.web_path,
+                frame_n: item.frame_n,
+                frame_idx: item.frame_idx,
+                score: Number(item.score || 0)
+            })).filter(candidate => candidate.videoId && (candidate.path || candidate.frame_idx !== undefined));
+        }
+
+        function persistPool(capturedPool) {
+            // Lưu ngay pool thô trước khi resolve để ranking không biến mất nếu API chậm/lỗi.
+            const latestState = PrelimSubmission.load();
+            latestState.latestPools = latestState.latestPools || {
+                frame: [], trake: [], trakeEventCount: 0
+            };
+            if (isTrakePool) {
+                latestState.latestPools.trake = PrelimSubmission.dedupe('trake', capturedPool).slice(0, 1000);
+                latestState.latestPools.trakeEventCount = detectedEventCount;
+            } else {
+                latestState.latestPools.frame = PrelimSubmission.dedupe('kis', capturedPool).slice(0, 1000);
+            }
+
+            const latestQuery = latestState.queries[queryId];
+            if (latestQuery && (
+                (isTrakePool && latestQuery.type === 'trake')
+                || (!isTrakePool && latestQuery.type !== 'trake')
+            )) {
+                if (detectedEventCount >= 2) latestQuery.eventCount = detectedEventCount;
+                latestQuery.pool = PrelimSubmission.dedupe(latestQuery.type, capturedPool).slice(0, 1000);
+            }
+            PrelimSubmission.save(latestState);
+        }
+
+        persistPool(pool);
+        if (!isTrakePool && pool.length) {
+            const resolvedPool = await resolveFrameCandidates(pool);
+            if (resolvedPool.length) persistPool(resolvedPool);
+        }
+    }
+
+    prelimActiveQuerySelect.addEventListener('change', () => {
+        const state = PrelimSubmission.load();
+        state.activeQueryId = prelimActiveQuerySelect.value;
+        const query = state.queries[state.activeQueryId];
+        if (query && !(query.pool || []).length) {
+            const latestPool = query.type === 'trake'
+                ? state.latestPools?.trake
+                : state.latestPools?.frame;
+            if (Array.isArray(latestPool) && latestPool.length) {
+                query.pool = latestPool.slice();
+                if (query.type === 'trake' && state.latestPools.trakeEventCount >= 2) {
+                    query.eventCount = state.latestPools.trakeEventCount;
+                }
+            }
+        }
+        PrelimSubmission.save(state);
+        refreshPrelimHeader();
+        if (latestSearchResponse && state.activeQueryId) {
+            captureLatestSearchPool(latestSearchResponse).catch(error => {
+                console.warn('Không gắn được kết quả đang hiển thị vào query:', error);
+            });
+        }
+    });
+    prelimPinCurrentFrame.addEventListener('click', pinCurrentFrameToPrelim);
+    window.addEventListener('focus', () => {
+        refreshPrelimHeader();
+        const state = PrelimSubmission.load();
+        if (latestSearchResponse && state.activeQueryId) {
+            captureLatestSearchPool(latestSearchResponse).catch(error => {
+                console.warn('Không gắn được kết quả đang hiển thị vào query:', error);
+            });
+        }
+    });
+    window.addEventListener('storage', refreshPrelimHeader);
+    window.addEventListener('prelim-submission-changed', refreshPrelimHeader);
+    refreshPrelimHeader();
     // --- GẮN CÁC SỰ KIỆN ---
     videoPlayerTitle.addEventListener('click', () => {
         videoPlayerArea.classList.toggle('full-screen');
@@ -366,6 +615,13 @@ document.addEventListener('DOMContentLoaded', () => {
             if (!response.ok) throw new Error(`Lỗi server: ${response.statusText}`);
             const data = await response.json();
             if (data.error) throw new Error(data.error);
+            latestSearchResponse = data;
+
+            // Lưu ranking gần nhất cho query sơ tuyển đang chọn. Việc resolve pool
+            // chạy nền, không chặn render kết quả search.
+            captureLatestSearchPool(data).catch(error => {
+                console.warn('Không lưu được pool sơ tuyển:', error);
+            });
             const variants = data.variants || [];
             if (variants.length === 0) {
                 statusMessage.textContent = 'Không mở rộng được câu truy vấn (Groq không trả kết quả hợp lệ).';
@@ -1025,6 +1281,13 @@ document.addEventListener('DOMContentLoaded', () => {
             useButton.addEventListener('click', () => useTrakeSequence(seq, useButton));
             header.appendChild(useButton);
 
+            const pinButton = document.createElement('button');
+            pinButton.type = 'button';
+            pinButton.className = 'trake-seq-pin-button';
+            pinButton.textContent = '📌 Ghim vào CSV';
+            pinButton.addEventListener('click', () => pinTrakeSequence(seq, pinButton));
+            header.appendChild(pinButton);
+
             card.appendChild(header);
 
             // --- Hàng ảnh theo thứ tự sự kiện ---
@@ -1575,7 +1838,8 @@ document.addEventListener('DOMContentLoaded', () => {
             const metaRes = await fetch(`${API_BASE_URL}/metadata`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ image_path: imagePath }), });
             const meta = await metaRes.json();
             document.getElementById('meta-pts').textContent = meta.pts_time ? parseFloat(meta.pts_time).toFixed(2) : "N/A";
-            document.getElementById('meta-idx').textContent = meta.frame_idx || "N/A";
+            document.getElementById('meta-idx').textContent =
+                meta.frame_idx !== null && meta.frame_idx !== undefined ? meta.frame_idx : "N/A";
             if (meta.playback_url) {
                 noVideoLinkSpan.style.display = 'none';
                 const url = new URL(meta.playback_url);

@@ -13,6 +13,15 @@
         <!-- (CẬP NHẬT theo ĐỀ_XUẤT.jpg) Bỏ banner lớn -> thanh tiêu đề mỏng để xem được nhiều frame hơn -->
         <header class="slim-header">
             <span class="slim-header-title">MFusion-VR</span>
+            <div class="prelim-header-tools" aria-label="Công cụ tạo bài nộp vòng sơ tuyển">
+                <label for="prelim-active-query">Query sơ tuyển</label>
+                <select id="prelim-active-query">
+                    <option value="">Chưa có query · bấm Bài nộp để tạo</option>
+                </select>
+                <a id="prelim-builder-link" href="/submission-builder" target="_blank" rel="noopener">
+                    📦 Bài nộp <span id="prelim-pinned-count">0</span>
+                </a>
+            </div>
             <div class="btc-id-container">
                 <input type="text" id="btc-evaluation-id" placeholder="EVALUATION_ID...">
                 <input type="text" id="btc-session-id" placeholder="SESSION_ID...">
@@ -231,6 +240,7 @@
                     <p><strong>Thời gian (giây):</strong> <span id="meta-pts"></span></p>
                     <p><strong>Index (frame_idx):</strong> <span id="meta-idx"></span></p>
                     <p><strong>Link video:</strong> <span id="no-video-link" style="display: inline;">Không có</span></p>
+                    <button type="button" id="prelim-pin-current-frame">📌 Ghim frame vào query sơ tuyển</button>
                     <div id="neighbor-frames">
                         <h4>Các frame lân cận:</h4>
                         <div class="neighbor-controls">
@@ -243,7 +253,8 @@
         </div> <!-- Kết thúc Bố cục Chính -->
     </div> <!-- Kết thúc Container -->
 
-    <script src="script.js"></script>
+    <script src="submission-store.js?v=20260820-5"></script>
+    <script src="script.js?v=20260820-5"></script>
 </body>
 </html>
 

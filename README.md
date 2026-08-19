@@ -35,7 +35,7 @@ AIC2026/
 │
 ├── requirements.txt                            # [GitHub] toàn bộ dependencies
 ├── .gitignore                                  # [GitHub]
-├── artifacts-manifest.json                     # [GitHub] shape/hash artifact
+├── artifacts-manifest.json                     # [GitHub] path/shape/count artifact
 ├── README.md                                   # [GitHub]
 │
 ├── scripts/                                    # [GitHub]
@@ -126,7 +126,7 @@ Hai bộ vector phải có cùng thứ tự row với metadata, dtype `float32`,
 `artifacts-manifest.json`.
 
 `metadata_ocr_filtered.zip` chứa cả metadata canonical và `ocr_text` lấy từ OCR
-original sau khi lọc logo/ticker L21/L22. Trước khi chạy, giải nén ZIP vào
+original sau khi lọc ticker L21/L22. Trước khi chạy, giải nén ZIP vào
 `ocr/metadata_ocr_filtered/`; `prepare_data.py` tự làm bước này nếu folder
 chưa có. Runtime không còn cần mang theo
 `metadata_ocr/` cũ hoặc `OCR_original_no_LLM/`. Hai nguồn đó chỉ cần giữ ở máy
@@ -252,8 +252,29 @@ Không push các folder/file sau: `keyframes/`, `embedding/`, `ocr/`,
 | `POST /search_similar_image` | một ảnh multipart |
 | `POST /search_trake_02` | mảng `events` theo thứ tự |
 | `POST /search_trake_image` | ít nhất hai ảnh multipart |
+| `POST /submission/resolve_candidates` | map keyframe sang `frame_idx` thật |
+| `POST /submission/playback` | tìm timestamp video gần `frame_idx` để kiểm tra |
+| `POST /submission/export` | validate và tạo `submission.zip` |
 
-## 8. Lỗi thường gặp
+## 8. Tạo file nộp vòng sơ tuyển AIC26
+
+Sau khi chạy app, mở `http://localhost:5000/submission-builder` hoặc bấm
+**📦 Bài nộp** trên header trang search.
+
+1. Tạo/import các query có tên kết thúc bằng `-kis`, `-qa` hoặc `-trake`.
+2. Chọn query đang làm trên header trang search.
+3. Mở chi tiết một frame rồi bấm **📌 Ghim frame**; với TRAKE, ghim cả chuỗi.
+4. Trong Submission Builder, sắp các dòng thủ công ở đầu và bấm
+   **Fill từ ranking gần nhất** để điền phần còn lại, tối đa 100 dòng.
+5. Dùng **▶ Xem** trên từng dòng để mở video tại timestamp gần frame đã chọn.
+6. Bấm **Tải submission.zip**. Backend kiểm tra `frame_idx`, số event TRAKE,
+   answer QA và tạo đúng cấu trúc `submission/*.csv` không có header.
+
+Bản nháp được lưu trong `localStorage` của trình duyệt. Dùng **Xuất project
+JSON** để sao lưu hoặc chuyển sang máy khác. Luồng submit trực tiếp cũ vẫn được
+giữ nguyên và độc lập với công cụ vòng sơ tuyển này.
+
+## 9. Lỗi thường gặp
 
 - **Jina Hybrid bị khóa**: thiếu hoặc sai một shard caption `L21.npy…L30.npy`;
   chạy lại `scripts/prepare_data.py` để thấy file/shape sai.

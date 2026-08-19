@@ -7,9 +7,7 @@
   "jina_revision": "05f4151c87083f204159bfa15e53fdb0320ffef1",
   "ocr_metadata": {
     "records": 317961,
-    "blank_texts": 17309,
-    "size_bytes": 11056578,
-    "sha256": "31ca7c891c0bcb3c29488001f070216462d6a689188ae0b2d63f8d118f0f9bed"
+    "blank_texts": 17308
   },
   "collections": {
     "L21": 26565,
@@ -26,7 +24,6 @@
   "paths": {
     "keyframes": "keyframes",
     "ocr_metadata": "ocr/metadata_ocr_filtered",
-    "ocr_metadata_archive": "ocr/metadata_ocr_filtered.zip",
     "asr_metadata": "asr/metadata_asr_clean",
     "jina_image_vectors": "embedding/jina/jina_embeddings_npy",
     "jina_caption_vectors": "embedding/jina/caption_embeddings_npy",

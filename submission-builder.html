@@ -1,0 +1,121 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>AIC26 · Submission Builder</title>
+    <link rel="stylesheet" href="submission-builder.css?v=20260820-5">
+</head>
+<body>
+    <header class="builder-header">
+        <div>
+            <a href="/" class="back-link">← Quay lại tìm kiếm</a>
+            <h1>Submission Builder · Vòng sơ tuyển</h1>
+            <p>Ghim kết quả chắc chắn lên đầu, sau đó fill ranking còn lại đến tối đa 100 dòng.</p>
+        </div>
+        <button type="button" id="export-zip" class="primary-button">Tải submission.zip</button>
+    </header>
+
+    <main class="builder-layout">
+        <aside class="query-sidebar">
+            <section class="panel new-query-panel">
+                <h2>Thêm query</h2>
+                <label for="new-query-id">Tên file query</label>
+                <input id="new-query-id" type="text" placeholder="query-1-kis">
+                <div id="event-count-row" class="field-row hidden">
+                    <label for="new-event-count">Số events TRAKE</label>
+                    <input id="new-event-count" type="number" min="2" max="30" value="2">
+                </div>
+                <button type="button" id="add-query">+ Thêm query</button>
+                <label class="file-button" for="import-query-files">Import file query .txt</label>
+                <input id="import-query-files" type="file" accept=".txt" multiple hidden>
+            </section>
+
+            <section class="panel query-list-panel">
+                <div class="panel-heading">
+                    <h2>Danh sách query</h2>
+                    <span id="query-count">0</span>
+                </div>
+                <div id="query-list" class="query-list"></div>
+            </section>
+
+            <section class="panel backup-panel">
+                <h2>Dự phòng</h2>
+                <button type="button" id="export-project">Xuất project JSON</button>
+                <label class="file-button" for="import-project">Import project JSON</label>
+                <input id="import-project" type="file" accept="application/json,.json" hidden>
+            </section>
+        </aside>
+
+        <section class="workspace panel">
+            <div id="empty-workspace" class="empty-state">
+                <h2>Chưa chọn query</h2>
+                <p>Tạo query ở cột trái, sau đó quay lại trang search để ghim kết quả.</p>
+            </div>
+
+            <div id="query-workspace" class="hidden">
+                <div class="workspace-heading">
+                    <div>
+                        <div class="query-type-badge" id="active-query-type">KIS</div>
+                        <h2 id="active-query-title"></h2>
+                        <p id="active-query-stats"></p>
+                    </div>
+                    <button type="button" id="delete-query" class="danger-button">Xóa query</button>
+                </div>
+
+                <label for="query-prompt">Nội dung truy vấn</label>
+                <textarea id="query-prompt" rows="3" placeholder="Nội dung file query để đối chiếu khi chọn kết quả..."></textarea>
+
+                <div id="qa-answer-row" class="answer-row hidden">
+                    <label for="qa-answer">Answer dùng cho các dòng QA <span id="answer-length">0/100</span></label>
+                    <input id="qa-answer" type="text" maxlength="100" placeholder="Nhập đáp án ngắn...">
+                </div>
+
+                <div id="trake-event-row" class="answer-row hidden">
+                    <label for="active-event-count">Số events / số frame mỗi dòng TRAKE</label>
+                    <input id="active-event-count" type="number" min="2" max="30">
+                </div>
+
+                <div class="toolbar">
+                    <a href="/" class="secondary-link">← Mở trang search để ghim</a>
+                    <button type="button" id="fill-results">Fill từ ranking gần nhất</button>
+                    <button type="button" id="clear-automatic">Xóa phần auto-fill</button>
+                    <button type="button" id="preview-csv">Xem trước CSV</button>
+                </div>
+
+                <div id="builder-message" class="message" role="status"></div>
+
+                <div class="ranking-heading">
+                    <h3>Thứ tự sẽ ghi vào CSV</h3>
+                    <span id="final-count">0/100</span>
+                </div>
+                <p class="ranking-note">Các dòng 📌 thủ công luôn đứng trước. Dùng nút ↑ ↓ để đổi thứ tự phần ghim.</p>
+                <div class="table-wrap">
+                    <table>
+                        <thead>
+                            <tr>
+                                <th>#</th>
+                                <th>Nguồn</th>
+                                <th>Kết quả</th>
+                                <th>Thao tác</th>
+                            </tr>
+                        </thead>
+                        <tbody id="ranking-rows"></tbody>
+                    </table>
+                </div>
+
+                <div id="csv-preview-panel" class="preview-panel hidden">
+                    <div class="panel-heading">
+                        <h3>CSV preview</h3>
+                        <button type="button" id="close-preview">Đóng</button>
+                    </div>
+                    <textarea id="csv-preview" rows="12" readonly></textarea>
+                </div>
+            </div>
+        </section>
+    </main>
+
+    <script src="submission-store.js?v=20260820-5"></script>
+    <script src="submission-builder.js?v=20260820-5"></script>
+</body>
+</html>

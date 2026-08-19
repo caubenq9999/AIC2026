@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import argparse
-import hashlib
 import json
 import sys
 import zipfile
@@ -41,7 +40,7 @@ def extract_ocr_metadata(data_dir: Path, manifest: dict) -> None:
     """Expand the transport ZIP into the directory consumed by the runtime."""
     paths = manifest["paths"]
     destination = data_dir / paths["ocr_metadata"]
-    archive_path = data_dir / paths["ocr_metadata_archive"]
+    archive_path = destination.with_suffix(".zip")
     if destination.is_dir():
         return
     if not archive_path.is_file():
@@ -76,20 +75,6 @@ def validate(data_dir: Path, manifest: dict, full: bool) -> None:
     if missing:
         raise FileNotFoundError("Thiếu artifact:\n- " + "\n- ".join(missing))
     ocr_spec = manifest["ocr_metadata"]
-    archive_path = paths["ocr_metadata_archive"]
-    if archive_path.is_file():
-        actual_size = archive_path.stat().st_size
-        if actual_size != int(ocr_spec["size_bytes"]):
-            raise ValueError(
-                f"OCR ZIP có {actual_size} bytes, cần {ocr_spec['size_bytes']} bytes."
-            )
-        digest = hashlib.sha256()
-        with archive_path.open("rb") as stream:
-            for chunk in iter(lambda: stream.read(1024 * 1024), b""):
-                digest.update(chunk)
-        if digest.hexdigest() != ocr_spec["sha256"]:
-            raise ValueError("SHA256 của OCR metadata ZIP không khớp manifest.")
-
     retrieval = load_retrieval_data(paths["ocr_metadata"], paths["keyframes"])
     if len(retrieval.image_records) != expected_total:
         raise ValueError(
@@ -145,7 +130,6 @@ def validate(data_dir: Path, manifest: dict, full: bool) -> None:
     print(
         f"OK OCR metadata: {len(retrieval.image_records):,} rows, "
         f"{blank_ocr:,} blank"
-        + (", ZIP SHA256 matched" if archive_path.is_file() else "")
     )
 
     if full:

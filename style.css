@@ -187,6 +187,41 @@ header.slim-header {
     color: #fff;
     border-color: var(--primary);
 }
+
+/* Cầu nối tối giản sang trang tạo CSV vòng sơ tuyển. */
+.prelim-header-tools {
+    display: flex;
+    align-items: center;
+    gap: 7px;
+    flex-wrap: wrap;
+    font-size: 12px;
+}
+.prelim-header-tools label { color: rgba(255, 255, 255, 0.78); font-weight: 700; }
+.prelim-header-tools select,
+#prelim-builder-link {
+    min-height: 31px;
+    padding: 5px 9px;
+    border: 1px solid rgba(255, 255, 255, 0.28);
+    border-radius: 6px;
+    background: rgba(255, 255, 255, 0.1);
+    color: #fff;
+    font-size: 12px;
+}
+.prelim-header-tools select { max-width: 210px; }
+.prelim-header-tools select option { color: var(--text-primary); background: #fff; }
+#prelim-builder-link { text-decoration: none; font-weight: 700; white-space: nowrap; }
+#prelim-builder-link:hover { background: rgba(255, 255, 255, 0.2); }
+#prelim-pinned-count {
+    display: inline-flex;
+    min-width: 19px;
+    height: 19px;
+    align-items: center;
+    justify-content: center;
+    padding: 0 5px;
+    border-radius: 10px;
+    background: var(--accent);
+    color: #fff;
+}
 .search-mode-box input[type="radio"]:disabled + label,
 .search-mode-box label.model-unavailable {
     opacity: 0.45;
@@ -697,6 +732,18 @@ header.slim-header {
     white-space: nowrap;
 }
 .trake-seq-use-button:hover { background: var(--success-hover); }
+.trake-seq-pin-button {
+    padding: 7px 12px;
+    font-size: 13px;
+    font-weight: 700;
+    border: 1px solid var(--accent);
+    border-radius: 6px;
+    background: #fff;
+    color: var(--accent);
+    cursor: pointer;
+    white-space: nowrap;
+}
+.trake-seq-pin-button:hover { background: rgba(14, 165, 233, 0.1); }
 /* Hàng ảnh theo thứ tự sự kiện — cuộn ngang khi chuỗi dài, không phá vỡ layout trang */
 .trake-seq-row {
     display: flex;
@@ -780,6 +827,18 @@ header.slim-header {
     border: 1px solid var(--border-light);
 }
 .submission-panel h4 { margin-bottom: 14px; font-size: 16px; font-weight: 700; color: var(--text-primary); }
+#prelim-pin-current-frame {
+    width: 100%;
+    margin: 12px 0 4px;
+    padding: 9px 12px;
+    border: 1px solid var(--accent);
+    border-radius: 7px;
+    background: rgba(14, 165, 233, 0.1);
+    color: var(--accent-hover);
+    font-weight: 700;
+    cursor: pointer;
+}
+#prelim-pin-current-frame:hover { background: var(--accent); color: #fff; }
 .submission-ui { padding: 14px; border: 1px solid var(--border-light); border-radius: 8px; background: var(--bg-sunken); }
 .submission-ui p { margin: 6px 0; font-size: 13.5px; font-weight: 600; color: var(--text-primary); }
 .submission-ui span { font-weight: 700; font-family: 'Courier New', monospace; color: var(--danger); }
