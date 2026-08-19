@@ -12,6 +12,9 @@ let kisStartTime = null;
 let trakeFrames = [];
 // (FIX) Biến global cho searchMode để dùng trong display functions
 let currentSearchMode = ''; // (THÊM MỚI) Global để tránh lỗi "not defined"
+const API_BASE_URL = window.location.protocol === 'file:'
+    ? 'http://localhost:5000'
+    : window.location.origin;
 // ===== LAZY LOADING OBSERVER =====
 // (SỬA LỖI) opacity giờ do CSS (.gallery-item.lazy) điều khiển hoàn toàn qua transition,
 // không set inline style nữa -> tránh xung đột & mượt hơn khi cuộn nhanh.
@@ -85,30 +88,26 @@ document.addEventListener('DOMContentLoaded', () => {
     const searchButton = document.getElementById('search-button');
     const topKInput = document.getElementById('top-k-input');
     const windowSizeInput = document.getElementById('window-size-input'); // (THÊM MỚI) Nới khung
-    const translateCheckbox = document.getElementById('translate-checkbox');
     const groupResultsCheckbox = document.getElementById('group-results-checkbox'); // (THÊM MỚI)
     const autoCropCheckbox = document.getElementById('auto-crop-checkbox'); // (THÊM MỚI) YOLOv8n auto-crop
     // (CẬP NHẬT) Query Expansion: nút "Mở rộng" + chip lựa chọn (bấm chọn 1 cái để search)
     const queryExpansionBox = document.getElementById('query-expansion-box');
     const expandQueryButton = document.getElementById('expand-query-button');
     const queryExpansionOptions = document.getElementById('query-expansion-options');
-    const beit3WeightSlider = document.getElementById('beit3-weight-slider'); // (THÊM MỚI) Fusion CLIP/BEIT3
-    const fusionWeightClipLabel = document.getElementById('fusion-weight-clip');
-    const fusionWeightBeit3Label = document.getElementById('fusion-weight-beit3');
     // (THÊM MỚI) DOM cho danh sách ô nhập sự kiện của TRAKE
     const trakeInputArea = document.getElementById('trake-input-area');
     const trakeEventRows = document.getElementById('trake-event-rows');
     const trakeAddEventButton = document.getElementById('trake-add-event-button');
     const trakeMaxGapInput = document.getElementById('trake-max-gap-input');
-    // (THÊM MỚI) DOM cho 3 ô riêng + tỷ lệ của Fusion Search (CLIP/OCR/ASR)
+    // DOM cho 3 ô riêng + tỷ lệ của Fusion Search (Jina Hybrid/OCR/ASR)
     const fusionInputArea = document.getElementById('fusion-input-area');
-    const fusionQueryClip = document.getElementById('fusion-query-clip');
+    const fusionQueryJina = document.getElementById('fusion-query-jina');
     const fusionQueryOcr = document.getElementById('fusion-query-ocr');
     const fusionQueryAsr = document.getElementById('fusion-query-asr');
-    const fusionSearchWeightClip = document.getElementById('fusionsearch-weight-clip');
+    const fusionSearchWeightJina = document.getElementById('fusionsearch-weight-jina');
     const fusionSearchWeightOcr = document.getElementById('fusionsearch-weight-ocr');
     const fusionSearchWeightAsr = document.getElementById('fusionsearch-weight-asr');
-    const fusionSearchWeightClipPct = document.getElementById('fusionsearch-weight-clip-pct');
+    const fusionSearchWeightJinaPct = document.getElementById('fusionsearch-weight-jina-pct');
     const fusionSearchWeightOcrPct = document.getElementById('fusionsearch-weight-ocr-pct');
     const fusionSearchWeightAsrPct = document.getElementById('fusionsearch-weight-asr-pct');
     const fusionSyncCheckbox = document.getElementById('fusion-sync-checkbox');
@@ -139,14 +138,7 @@ document.addEventListener('DOMContentLoaded', () => {
     const currentVideoTimeSpan = document.getElementById('current-video-time');
     const currentFrameIndexSpan = document.getElementById('current-frame-index');
     // DOM cho các nút chọn chế độ tìm kiếm
-    const modeSemanticRadio = document.getElementById('mode-semantic');
-    const modeOcrRadio = document.getElementById('mode-ocr');
-    const modeAsrRadio = document.getElementById('mode-asr');
-    const modeFusionRadio = document.getElementById('mode-fusion'); // (THÊM MỚI) Gộp CLIP+OCR+ASR
-    const modeSimilarRadio = document.getElementById('mode-similar'); // (THÊM MỚI)
-    const modeTrake02Radio = document.getElementById('mode-trake-02'); // (THÊM MỚI CHO TRAKE.02)
-    const modeTrakeImageRadio = document.getElementById('mode-trake-image'); // (THÊM MỚI CHO TRAKE IMAGE)
-    const translateBox = document.querySelector('.translate-box');
+    const searchModeRadios = document.querySelectorAll('input[name="search-mode"]');
     const groupResultsBox = document.querySelector('.group-box'); // (THÊM MỚI)
     const windowSizeBox = document.querySelector('.window-size-box'); // (THÊM MỚI) Nới khung
     // === (THÊM MỚI) DOM CHO SUBMISSION PANEL ===
@@ -257,42 +249,33 @@ document.addEventListener('DOMContentLoaded', () => {
         // [SỬA LỖI !important]
         submissionPanel.classList.add("hidden");
     });
-    // (THÊM MỚI) Cập nhật nhãn % khi kéo thanh trượt fusion CLIP/BEIT3
-    if (beit3WeightSlider) {
-        beit3WeightSlider.addEventListener('input', () => {
-            const clipPct = parseInt(beit3WeightSlider.value, 10);
-            fusionWeightClipLabel.textContent = `${clipPct}%`;
-            fusionWeightBeit3Label.textContent = `${100 - clipPct}%`;
-        });
-    }
-
-    // (THÊM MỚI) Fusion Search: đồng bộ nội dung 3 ô CLIP/OCR/ASR khi tích "Đồng bộ"
+    // Fusion Search: đồng bộ nội dung 3 ô khi tích "Đồng bộ".
     function syncFusionQueryBoxes(sourceInput) {
         if (!fusionSyncCheckbox.checked) return;
-        [fusionQueryClip, fusionQueryOcr, fusionQueryAsr].forEach(input => {
+        [fusionQueryJina, fusionQueryOcr, fusionQueryAsr].forEach(input => {
             if (input !== sourceInput) input.value = sourceInput.value;
         });
     }
-    fusionQueryClip.addEventListener('input', () => syncFusionQueryBoxes(fusionQueryClip));
+    fusionQueryJina.addEventListener('input', () => syncFusionQueryBoxes(fusionQueryJina));
     fusionQueryOcr.addEventListener('input', () => syncFusionQueryBoxes(fusionQueryOcr));
     fusionQueryAsr.addEventListener('input', () => syncFusionQueryBoxes(fusionQueryAsr));
-    // Bật lại "Đồng bộ" -> đồng bộ ngay theo nội dung ô CLIP để tránh 3 ô đang lệch nhau
+    // Bật lại "Đồng bộ" -> đồng bộ ngay theo nội dung ô Jina.
     fusionSyncCheckbox.addEventListener('change', () => {
-        if (fusionSyncCheckbox.checked) syncFusionQueryBoxes(fusionQueryClip);
+        if (fusionSyncCheckbox.checked) syncFusionQueryBoxes(fusionQueryJina);
     });
 
-    // (THÊM MỚI) Fusion Search: cập nhật nhãn % tỷ lệ CLIP/OCR/ASR (chuẩn hoá theo tổng 3 thanh trượt)
+    // Cập nhật nhãn tỷ lệ Jina Hybrid/OCR/ASR.
     function updateFusionSearchWeightLabels() {
-        const wClip = parseInt(fusionSearchWeightClip.value, 10);
+        const wJina = parseInt(fusionSearchWeightJina.value, 10);
         const wOcr = parseInt(fusionSearchWeightOcr.value, 10);
         const wAsr = parseInt(fusionSearchWeightAsr.value, 10);
-        const total = wClip + wOcr + wAsr;
+        const total = wJina + wOcr + wAsr;
         const pct = (w) => total > 0 ? Math.round((w / total) * 100) : 0;
-        fusionSearchWeightClipPct.textContent = `${pct(wClip)}%`;
+        fusionSearchWeightJinaPct.textContent = `${pct(wJina)}%`;
         fusionSearchWeightOcrPct.textContent = `${pct(wOcr)}%`;
         fusionSearchWeightAsrPct.textContent = `${pct(wAsr)}%`;
     }
-    [fusionSearchWeightClip, fusionSearchWeightOcr, fusionSearchWeightAsr].forEach(slider => {
+    [fusionSearchWeightJina, fusionSearchWeightOcr, fusionSearchWeightAsr].forEach(slider => {
         slider.addEventListener('input', updateFusionSearchWeightLabels);
     });
 
@@ -375,7 +358,7 @@ document.addEventListener('DOMContentLoaded', () => {
         queryExpansionOptions.innerHTML = '';
         queryExpansionOptions.classList.add('hidden');
         try {
-            const response = await fetch('http://localhost:5000/expand_query', {
+            const response = await fetch(`${API_BASE_URL}/expand_query`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ query: q })
@@ -411,14 +394,29 @@ document.addEventListener('DOMContentLoaded', () => {
         }
     });
 
+    async function updateSemanticModelAvailability() {
+        try {
+            const response = await fetch(`${API_BASE_URL}/semantic_models`);
+            if (!response.ok) return;
+            const payload = await response.json();
+            Object.entries(payload.models || {}).forEach(([modelName, info]) => {
+                const radio = document.getElementById(`mode-semantic-${modelName}`);
+                if (!radio) return;
+                const label = document.querySelector(`label[for="${radio.id}"]`);
+                radio.disabled = !info.available;
+                if (label) {
+                    label.classList.toggle('model-unavailable', !info.available);
+                    label.title = info.reason || label.title;
+                }
+            });
+        } catch (error) {
+            console.warn('Không lấy được trạng thái semantic models:', error);
+        }
+    }
+
     // Sự kiện khi thay đổi chế độ tìm kiếm
-    modeSemanticRadio.addEventListener('change', updateControls);
-    modeOcrRadio.addEventListener('change', updateControls);
-    modeAsrRadio.addEventListener('change', updateControls);
-    modeFusionRadio.addEventListener('change', updateControls); // (THÊM MỚI) Gộp CLIP+OCR+ASR
-    modeSimilarRadio.addEventListener('change', updateControls); // (THÊM MỚI)
-    modeTrake02Radio.addEventListener('change', updateControls); // (THÊM MỚI CHO TRAKE.02)
-    modeTrakeImageRadio.addEventListener('change', updateControls); // (THÊM MỚI CHO TRAKE IMAGE)
+    searchModeRadios.forEach(radio => radio.addEventListener('change', updateControls));
+    updateSemanticModelAvailability();
     updateControls(); // Chạy lần đầu
     document.addEventListener('keydown', (event) => {
         if (event.key === "Escape") {
@@ -682,7 +680,7 @@ document.addEventListener('DOMContentLoaded', () => {
         submissionLog.textContent = "Đang gửi...\n" + finalRequestString;
 
         try {
-            const response = await fetch('http://localhost:5000/submit_answer', {
+            const response = await fetch(`${API_BASE_URL}/submit_answer`, {
                 method: 'POST',
                 headers: {
                     'Content-Type': 'application/json'
@@ -726,7 +724,6 @@ document.addEventListener('DOMContentLoaded', () => {
         }
 
         // (THÊM MỚI) Ẩn/hiện các tùy chọn
-        translateBox.classList.add('hidden');
         if (queryExpansionBox) queryExpansionBox.classList.add('hidden'); // (THÊM MỚI)
         groupResultsBox.classList.add('hidden'); // Ẩn group box
         if (windowSizeBox) windowSizeBox.classList.add('hidden'); // Ẩn window size
@@ -748,24 +745,21 @@ document.addEventListener('DOMContentLoaded', () => {
             groupResultsBox.classList.remove('hidden');
             if (windowSizeBox) windowSizeBox.classList.remove('hidden');
         } else if (searchMode === 'fusion') {
-            // (THÊM MỚI) Chế độ Fusion: Ẩn ô text chung, hiện 3 ô riêng CLIP/OCR/ASR + tỷ lệ
+            // Fusion: ẩn ô text chung, hiện 3 nhánh Jina Hybrid/OCR/ASR.
             queryInput.classList.add('hidden');
             fusionInputArea.classList.remove('hidden');
             groupResultsBox.classList.remove('hidden');
-            translateBox.classList.remove('hidden'); // Áp dụng cho riêng nhánh CLIP
         } else if (searchMode === 'trake-02') {
             // (CẬP NHẬT) TRAKE: mỗi sự kiện một ô riêng (thêm/xóa được) thay cho việc ngăn bằng ';'.
             // Không cần "Nới khung ±frame" (đã chuyển sang căn chỉnh theo thứ tự thời gian) và cũng
             // không cần "Nhóm theo video" vì mỗi video vốn đã là 1 chuỗi.
             queryInput.classList.add('hidden');
             trakeInputArea.classList.remove('hidden');
-            translateBox.classList.remove('hidden'); // Dịch riêng từng sự kiện sang tiếng Anh cho CLIP
         } else {
             // Các chế độ text-based: Hiện text, Ẩn uploads
             queryInput.classList.remove('hidden');
             groupResultsBox.classList.remove('hidden');
-            if (searchMode === 'semantic') {
-                translateBox.classList.remove('hidden');
+            if (searchMode.startsWith('semantic-')) {
                 // (THÊM MỚI) Query Expansion chỉ áp dụng cho Semantic Search
                 if (queryExpansionBox) queryExpansionBox.classList.remove('hidden');
             }
@@ -829,11 +823,6 @@ document.addEventListener('DOMContentLoaded', () => {
             formData.append('group', group_results); // (THÊM MỚI)
             // (THÊM MỚI) Gửi auto_crop từ checkbox Toggle
             formData.append('auto_crop', autoCropCheckbox.checked ? 'true' : 'false');
-            // (THÊM MỚI) Gửi trọng số fusion CLIP/BEIT3 từ thanh trượt (0.0 - 1.0)
-            if (beit3WeightSlider) {
-                formData.append('beit3_weight', (parseInt(beit3WeightSlider.value, 10) / 100).toString());
-            }
-
             fetchOptions = {
                 method: 'POST',
                 body: formData
@@ -861,26 +850,25 @@ document.addEventListener('DOMContentLoaded', () => {
                 body: formData
             };
         } else if (searchMode === 'fusion') {
-            // (THÊM MỚI) Fusion: 3 ô riêng CLIP/OCR/ASR + tỷ lệ trọng số, gộp bằng RRF có trọng số
-            const qClip = fusionQueryClip.value.trim();
+            // Fusion: 3 ô riêng Jina Hybrid/OCR/ASR, gộp bằng RRF.
+            const qJina = fusionQueryJina.value.trim();
             const qOcr = fusionQueryOcr.value.trim();
             const qAsr = fusionQueryAsr.value.trim();
-            if (!qClip && !qOcr && !qAsr) {
-                statusMessage.textContent = 'Vui lòng nhập ít nhất 1 trong 3 ô (CLIP/OCR/ASR).';
+            if (!qJina && !qOcr && !qAsr) {
+                statusMessage.textContent = 'Vui lòng nhập ít nhất 1 trong 3 ô (Jina Hybrid/OCR/ASR).';
                 resetSearchButton();
                 return;
             }
             endpoint = '/search_fusion';
             const payload = {
-                query_clip: qClip,
+                query_jina: qJina,
                 query_ocr: qOcr,
                 query_asr: qAsr,
-                weight_clip: parseInt(fusionSearchWeightClip.value, 10),
+                weight_jina: parseInt(fusionSearchWeightJina.value, 10),
                 weight_ocr: parseInt(fusionSearchWeightOcr.value, 10),
                 weight_asr: parseInt(fusionSearchWeightAsr.value, 10),
                 top_k: top_k,
-                group: group_results,
-                translate: translateCheckbox.checked
+                group: group_results
             };
             fetchOptions = {
                 method: 'POST',
@@ -900,7 +888,6 @@ document.addEventListener('DOMContentLoaded', () => {
             const payload = {
                 events: events,
                 top_k: top_k,
-                translate: translateCheckbox.checked,
                 // Vượt ngưỡng này giữa 2 sự kiện liên tiếp thì backend trừ điểm nặng
                 max_gap_seconds: isNaN(maxGap) ? 30 : maxGap
             };
@@ -923,9 +910,9 @@ document.addEventListener('DOMContentLoaded', () => {
                 group: group_results // (THÊM MỚI)
             };
 
-            if (searchMode === 'semantic') {
+            if (searchMode.startsWith('semantic-')) {
                 endpoint = '/search';
-                payload.translate = translateCheckbox.checked;
+                payload.semantic_model = searchMode.replace('semantic-', '');
             }
             else if (searchMode === 'ocr') {
                 endpoint = '/search_ocr';
@@ -944,7 +931,7 @@ document.addEventListener('DOMContentLoaded', () => {
         }
         // (CẬP NHẬT) Fetch call dùng chung
         try {
-            const response = await fetch('http://localhost:5000' + endpoint, fetchOptions);
+            const response = await fetch(API_BASE_URL + endpoint, fetchOptions);
             if (!response.ok) throw new Error(`Lỗi server: ${response.statusText}`);
             const data = await response.json();
             if (data.error) throw new Error(data.error);
@@ -968,7 +955,7 @@ document.addEventListener('DOMContentLoaded', () => {
                     displayAsrResults(data.results); // Single
                 }
             } else {
-                // Semantic, OCR, Similar, TRAKE Image
+                // Semantic Jina, OCR, Similar, TRAKE Image
                 if (isGrouped) {
                     displayGroupedImageResults(data.results);
                 } else {
@@ -984,7 +971,10 @@ document.addEventListener('DOMContentLoaded', () => {
             } else {
                 totalResults = data.results.length;
             }
-            statusMessage.textContent = `Tìm thấy ${totalResults} kết quả.`;
+            const semanticLabel = data.semantic_model
+                ? ` bằng ${data.semantic_model.toUpperCase()}`
+                : '';
+            statusMessage.textContent = `Tìm thấy ${totalResults} kết quả${semanticLabel}.`;
 
         } catch (error) {
             console.error('Lỗi khi tìm kiếm:', error);
@@ -1194,7 +1184,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
         currentFrameIndexSpan.textContent = "Đang tải...";
         try {
-            const response = await fetch('http://localhost:5000/get_keyframe_map', {
+            const response = await fetch(`${API_BASE_URL}/get_keyframe_map`, {
                 method: 'POST',
                 headers: {
                     'Content-Type': 'application/json'
@@ -1582,7 +1572,7 @@ document.addEventListener('DOMContentLoaded', () => {
         document.getElementById("neighbor-thumbnails").innerHTML = "Đang tải...";
         // Gọi API lấy metadata
         try {
-            const metaRes = await fetch('http://localhost:5000/metadata', { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ image_path: imagePath }), });
+            const metaRes = await fetch(`${API_BASE_URL}/metadata`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ image_path: imagePath }), });
             const meta = await metaRes.json();
             document.getElementById('meta-pts').textContent = meta.pts_time ? parseFloat(meta.pts_time).toFixed(2) : "N/A";
             document.getElementById('meta-idx').textContent = meta.frame_idx || "N/A";
@@ -1608,7 +1598,7 @@ document.addEventListener('DOMContentLoaded', () => {
         }
         // Tải frame lân cận
         try {
-            const neighborRes = await fetch('http://localhost:5000/neighbor_frames', { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ image_path: imagePath }), });
+            const neighborRes = await fetch(`${API_BASE_URL}/neighbor_frames`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ image_path: imagePath }), });
             const data = await neighborRes.json();
             currentNeighborPaths = data.neighbors || [];
             renderNeighborFrames(currentNeighborPaths, imagePath);

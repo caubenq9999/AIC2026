@@ -187,6 +187,12 @@ header.slim-header {
     color: #fff;
     border-color: var(--primary);
 }
+.search-mode-box input[type="radio"]:disabled + label,
+.search-mode-box label.model-unavailable {
+    opacity: 0.45;
+    cursor: not-allowed;
+    border-style: dashed;
+}
 .submission-mode-select input[type="radio"]:checked + label {
     background: var(--success);
     color: #fff;
@@ -264,21 +270,7 @@ header.slim-header {
 .auto-crop-box { margin-top: 12px; font-size: 13px; font-weight: 600; color: var(--text-secondary); }
 .auto-crop-box input[type="checkbox"] { accent-color: var(--accent); cursor: pointer; vertical-align: middle; margin-right: 4px; }
 
-/* ===== THANH TRƯỢT FUSION CLIP <-> BEIT3 (Similar Search) ===== */
-.fusion-weight-box {
-    width: 100%;
-    max-width: 340px;
-    margin-top: 14px;
-    padding: 10px 14px;
-    background: var(--bg-card);
-    border: 1px solid var(--border-medium);
-    border-radius: 8px;
-}
-.fusion-weight-box label { display: block; font-size: 12.5px; font-weight: 600; color: var(--text-primary); margin-bottom: 6px; }
-.fusion-weight-box input[type="range"] { width: 100%; accent-color: var(--accent); cursor: pointer; }
-#fusion-weight-clip, #fusion-weight-beit3 { font-weight: 700; color: var(--accent); }
-
-/* ===== 3 Ô RIÊNG CHO FUSION SEARCH (CLIP/OCR/ASR) + TỶ LỆ TRỌNG SỐ ===== */
+/* ===== 3 Ô RIÊNG CHO FUSION SEARCH (JINA HYBRID/OCR/ASR) ===== */
 .fusion-input-area {
     flex-grow: 1;
     display: flex;

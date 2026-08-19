@@ -1,4 +1,50 @@
 # --- 1. IMPORT CÁC THƯ VIỆN CẦN THIẾT ---
+import os
+from pathlib import Path
+
+# Mọi đường dẫn mặc định đều neo theo vị trí app.py, không phụ thuộc cwd.
+BASE_DIR = Path(__file__).resolve().parent
+
+
+def project_path(environment_variable, *relative_parts):
+    configured_path = os.getenv(environment_variable)
+    if configured_path:
+        configured_path = Path(configured_path).expanduser()
+        if not configured_path.is_absolute():
+            configured_path = BASE_DIR / configured_path
+        return configured_path.resolve()
+    return BASE_DIR.joinpath(*relative_parts).resolve()
+
+
+def resolve_ocr_metadata_path():
+    """Resolve OCR metadata from an override, directory, or legacy ZIP archive."""
+    configured_path = os.getenv("AIC_OCR_METADATA_PATH", "").strip()
+    if configured_path:
+        return project_path("AIC_OCR_METADATA_PATH")
+
+    candidates = (
+        BASE_DIR / "ocr" / "metadata_ocr_filtered",
+        BASE_DIR / "ocr" / "metadata_ocr_filtered.zip",
+        BASE_DIR / "ocr" / "metadata_ocr",
+        BASE_DIR / "ocr" / "metadata_ocr.zip",
+    )
+    for candidate in candidates:
+        if candidate.exists():
+            return candidate.resolve()
+
+    # Keep the error emitted by load_retrieval_data deterministic and useful.
+    return candidates[0].resolve()
+
+
+# Có thể đổi vị trí cache bằng AIC_CACHE_DIR mà không cần sửa source.
+CACHE_DIR = project_path("AIC_CACHE_DIR", ".cache", "huggingface")
+os.makedirs(CACHE_DIR, exist_ok=True)
+
+os.environ["HF_HOME"] = str(CACHE_DIR)
+os.environ["TRANSFORMERS_CACHE"] = str(CACHE_DIR)
+os.environ["TORCH_HOME"] = str(CACHE_DIR)
+os.environ["YOLO_CONFIG_DIR"] = str(CACHE_DIR)
+
 #BTC_EVALUATION_ID = "dda49193-bcb6-4e7d-880f-bf7ec60046ee"
 #BTC_SESSION_ID = "tlMIiLdLV-yTB_ENJx6gDtimFMNYL5qk"
 BTC_API_BASE_URL = "https://eventretrieval.oj.io.vn"
@@ -7,15 +53,19 @@ import requests
 import numpy as np
 import json
 # pyrefly: ignore [missing-import]
-from flask import Flask, request, jsonify, send_from_directory, g
-from transformers import CLIPProcessor, CLIPModel
-from peft import PeftModel
-import faiss 
-from pathlib import Path
+from flask import Flask, request, jsonify, send_from_directory, g, abort
 import gc
-import os
-import pandas as pd
-from test_reranker import BlipReranker # (THÊM MỚI) Import Reranker
+from retrieval_data import (
+    load_asr_metadata,
+    load_retrieval_data,
+    overlay_ocr_jsonl,
+    parse_keyframe_path,
+)
+from semantic_search import (
+    JinaTextEncoder,
+    ModelUnavailableError,
+    ShardedNpyIndex,
+)
 from groq import Groq
 from flask_cors import CORS
 # from rank_bm25 import BM25Okapi # <-- XÓA BỎ (Không dùng thư viện nữa)
@@ -27,19 +77,27 @@ from PIL import Image # (THÊM MỚI) Thêm PIL để xử lý ảnh upload
 import io # (THÊM MỚI) Thêm io
 from ultralytics import YOLO # (THÊM MỚI) YOLOv8 cho auto-crop pre-processing
 
+
 print("--- KHỞI ĐỘNG HỆ THỐNG TRUY VẤN HÌNH ẢNH ---")
 
 # --- 2. CẤU HÌNH ---
 index_name = "aic_ocr_index"
-MODEL_NAME = "apple/DFN5B-CLIP-ViT-H-14-378"
-ADAPTER_PATH = "fine_tuned_model_lora_2025"
-EMBEDDINGS_PATH = "image_embeddings.npy"
-PATHS_LIST_PATH = "image_paths.json"
-KEYFRAMES_DIR = "Keyframes"
-MAP_KEYFRAMES_DIR = "map-keyframes"
-MEDIA_INFO_DIR = "media-info"
-OCR_DATA_PATH = "ocr.json"
-ASR_DATA_DIR = "asr_result"
+KEYFRAMES_DIR = project_path("AIC_KEYFRAMES_DIR", "keyframes")
+OCR_METADATA_PATH = resolve_ocr_metadata_path()
+OCR_TEXT_DIR = project_path(
+    "AIC_OCR_TEXT_DIR", "OCR_original_no_LLM", "OCR"
+)
+ASR_METADATA_DIR = project_path("AIC_ASR_METADATA_DIR", "asr", "metadata_asr_clean")
+YOLO_MODEL_PATH = project_path("AIC_YOLO_MODEL_PATH", "yolov8n.pt")
+JINA_VECTORS_DIR = project_path(
+    "AIC_JINA_VECTORS_DIR", "embedding", "jina", "jina_embeddings_npy"
+)
+JINA_CAPTION_VECTORS_DIR = project_path(
+    "AIC_JINA_CAPTION_VECTORS_DIR",
+    "embedding",
+    "jina",
+    "caption_embeddings_npy",
+)
 
 # --- 3. CLASS BM25 TỰ IMPLEMENT CỦA BẠN ---
 class BM25:
@@ -79,11 +137,11 @@ class BM25:
 # --- KẾT THÚC CLASS BM25 ---
 
 # --- 4. CẤU HÌNH GROQ API ---
-GROQ_API_KEY = "tu_thay_vo_di_ba"  # (TẠM - ĐANG TEST) Dán API key Groq thật vào đây
+GROQ_API_KEY = os.getenv("GROQ_API_KEY", "").strip()
 GROQ_MODEL = "openai/gpt-oss-120b"
 try:
-    if not GROQ_API_KEY or GROQ_API_KEY == "YOUR_GROQ_API_KEY_HERE":
-        raise ValueError("Chưa điền GROQ_API_KEY thật vào biến ở trên.")
+    if not GROQ_API_KEY:
+        raise ValueError("Chưa cấu hình biến môi trường GROQ_API_KEY.")
     groq_client = Groq(api_key=GROQ_API_KEY)
     print("Kết nối với Groq API thành công.")
 except Exception as e:
@@ -102,160 +160,95 @@ def groq_generate(prompt):
 print("Đang tải model và các tài nguyên, vui lòng đợi...")
 device = "cuda" if torch.cuda.is_available() else "cpu"
 
-# Tải CLIP model
-base_model = CLIPModel.from_pretrained(MODEL_NAME, torch_dtype=torch.float16)
-processor = CLIPProcessor.from_pretrained(MODEL_NAME)
-if not Path(ADAPTER_PATH).is_dir():
-    raise FileNotFoundError(f"LỖI: Không tìm thấy thư mục adapter LoRA '{ADAPTER_PATH}'.")
-model = PeftModel.from_pretrained(base_model, ADAPTER_PATH)
-model = model.to(device)
-model.eval()
-print(f"Model CLIP đã được tải thành công lên thiết bị: {device.upper()}")
-
-# (THÊM MỚI) Tải mô hình Reranker
-print("Đang tải mô hình Reranker (BLIP-ITM)...")
-try:
-    reranker = BlipReranker(device=device)
-except Exception as e:
-    print(f"Lỗi khi tải Reranker: {e}")
-    reranker = None
-
 # (THÊM MỚI) Tải YOLOv8n model cho auto-crop pre-processing
 yolo_model = None
 try:
-    yolo_model = YOLO("yolov8n.pt")  # Tự động tải về nếu chưa có
+    yolo_model = YOLO(str(YOLO_MODEL_PATH))  # Tự động tải về nếu chưa có
     yolo_model.to(device)
     print(f"Model YOLOv8n đã được tải thành công lên thiết bị: {device.upper()}")
 except Exception as e:
     print(f"CẢNH BÁO: Không thể tải YOLOv8n model: {e}. Tính năng auto_crop sẽ bị vô hiệu hóa.")
     yolo_model = None
 
-# Tải Semantic data
-image_embeddings = np.load(EMBEDDINGS_PATH).astype('float32')
-with open(PATHS_LIST_PATH, 'r') as f: image_paths = json.load(f)
-print(f"Đã tải {len(image_paths)} vector đặc trưng của ảnh.")
+retrieval_data = load_retrieval_data(
+    OCR_METADATA_PATH,
+    KEYFRAMES_DIR,
+)
+image_records = retrieval_data.image_records
+metadata_cache = retrieval_data.metadata_cache
+keyframe_time_cache = retrieval_data.keyframe_time_cache
+video_frame_ids = retrieval_data.video_frame_ids
+video_url_cache = retrieval_data.video_url_cache
+print(f"Loaded {len(image_records)} embedding/OCR records from {len(metadata_cache)} videos.")
 
-# (THÊM MỚI) Tạo map từ video_id -> prefix đường dẫn
-video_id_to_path_prefix = {}
-for p_str in image_paths:
-    # (SỬA LỖI) Xóa check "Keyframes/" và xử lý cả 2 trường hợp
-    # (Trường hợp 1: D:\AIC2025\Keyframes\Keyframes_L21\L21_V001\001.jpg)
-    # (Trường hợp 2: Keyframes_L21\L21_V001\001.jpg)
-    
-    # Chuẩn hóa đường dẫn
-    path_str_norm = p_str.replace('\\', '/')
-    
-    # Tìm vị trí của "Keyframes_" (ví dụ: Keyframes_L21)
-    kf_index = path_str_norm.find("Keyframes_")
-    
-    if kf_index != -1:
-        # Tách phần sau "Keyframes/" (ví dụ: Keyframes_L21/L21_V001/001.jpg)
-        sub_path_str = path_str_norm[kf_index:]
-        p = Path(sub_path_str)
-        if len(p.parts) > 1:
-            # p.parts[0] là 'Keyframes_L21', p.parts[1] là 'L21_V001'
-            video_id = p.parts[1]
-            if video_id not in video_id_to_path_prefix:
-                # Lưu prefix: Keyframes_L21/L21_V001
-                video_id_to_path_prefix[video_id] = str(Path(p.parts[0]) / p.parts[1]).replace('\\', '/')
-print(f"Đã tạo map prefix cho {len(video_id_to_path_prefix)} video.")
-
-
-# Tải OCR data
-try:
-    with open(OCR_DATA_PATH, 'r', encoding='utf-8') as f:
-        ocr_data = json.load(f)
-    print(f"Đã tải {len(ocr_data)} bản ghi OCR.")
-except Exception as e:
-    print(f"Lỗi khi tải file OCR '{OCR_DATA_PATH}': {e}")
-    ocr_data = []
-
-# (CẬP NHẬT) Tải ASR data
-asr_data = [] 
-asr_corpus_tokenized = [] 
-asr_video_map = {} 
-print("Đang tải dữ liệu ASR...")
-asr_dir_path = Path(ASR_DATA_DIR)
-if not asr_dir_path.is_dir():
-    print(f"CẢNH BÁO: Không tìm thấy thư mục '{ASR_DATA_DIR}'. Bỏ qua tìm kiếm ASR.")
+# File filtered đã nhúng OCR text. Với metadata legacy, overlay JSONL vẫn được
+# hỗ trợ để tái tạo đúng cùng kết quả mà không sửa nguồn canonical.
+ocr_text_is_embedded = OCR_METADATA_PATH.name.lower() in {
+    "metadata_ocr_filtered",
+    "metadata_ocr_filtered.zip",
+}
+if OCR_TEXT_DIR.is_dir() and not ocr_text_is_embedded:
+    ocr_overlay_stats = overlay_ocr_jsonl(OCR_TEXT_DIR, image_records)
+    print(
+        "Loaded OCR text from "
+        f"{OCR_TEXT_DIR}: {ocr_overlay_stats['rows']:,} rows / "
+        f"{ocr_overlay_stats['files']} shards "
+        f"({ocr_overlay_stats['blank_texts']:,} blank; "
+        f"filtered {ocr_overlay_stats['filtered_logo_lines']:,} logo lines + "
+        f"{ocr_overlay_stats['filtered_ticker_lines']:,} ticker lines in L21/L22)."
+    )
 else:
-    for json_file in asr_dir_path.glob("**/*.json"):
-        video_id = json_file.stem
-        video_segments = [] 
-        try:
-            with open(json_file, 'r', encoding='utf-8') as f:
-                data = json.load(f)
-                
-                # (SỬA LỖI) Dùng index của list *đã lọc*
-                filtered_index = 0 
-                for segment in data.get('segments', []): 
-                    text = segment.get('text', '').strip()
-                    if text:
-                        segment_data = {
-                            "video_id": video_id,
-                            "text": text,
-                            "start": segment.get('start', 0),
-                            "end": segment.get('end', 0),
-                            # (SỬA LỖI) Dùng index đã lọc, không dùng index gốc
-                            "video_segment_index": filtered_index 
-                        }
-                        asr_data.append(segment_data) 
-                        video_segments.append(segment_data) 
-                        asr_corpus_tokenized.append(text.lower().split())
-                        filtered_index += 1 # (SỬA LỖI) Tăng index đã lọc
-                        
-            asr_video_map[video_id] = video_segments 
-        except Exception as e:
-            print(f"Lỗi khi đọc file ASR {json_file}: {e}")
-print(f"Đã tải {len(asr_data)} phân đoạn ASR từ {len(asr_video_map)} video.")
+    if ocr_text_is_embedded:
+        print(f"OCR text đã được nhúng và lọc trong {OCR_METADATA_PATH}.")
+    else:
+        print(
+            f"CẢNH BÁO: Không tìm thấy OCR JSONL {OCR_TEXT_DIR}; "
+            "OCR mode dùng ocr_text trong metadata canonical."
+        )
+ocr_data = image_records
 
+# Hai index Jina dùng exact search trên NPY mmap và chung một thứ tự metadata.
+jina_semantic_index = ShardedNpyIndex(
+    "Jina",
+    JINA_VECTORS_DIR,
+    image_records,
+    expected_dimension=1024,
+)
+jina_caption_index = None
+jina_caption_index_reason = "Caption embeddings chưa được tạo."
+try:
+    expected_caption_shards = {f"L{number}.npy" for number in range(21, 31)}
+    present_caption_shards = {
+        path.name for path in JINA_CAPTION_VECTORS_DIR.glob("L*.npy")
+    }
+    missing_caption_shards = sorted(expected_caption_shards - present_caption_shards)
+    if missing_caption_shards:
+        raise FileNotFoundError(
+            "Caption embeddings chưa đầy đủ; còn thiếu "
+            + ", ".join(missing_caption_shards)
+            + ". Chạy embedding/jina/encode_captions.py để tiếp tục."
+        )
+    jina_caption_index = ShardedNpyIndex(
+        "Jina Caption",
+        JINA_CAPTION_VECTORS_DIR,
+        image_records,
+        expected_dimension=1024,
+    )
+    jina_caption_index_reason = (
+        f"Đã map {jina_caption_index.ntotal:,} caption vectors."
+    )
+except (FileNotFoundError, ValueError) as exc:
+    # Jina image vẫn dùng độc lập được nếu caption artifact chưa đầy đủ.
+    jina_caption_index_reason = str(exc)
+    print(f"Caption search chưa sẵn sàng: {exc}")
+jina_text_encoder = JinaTextEncoder(device=device)
+print(f"Đã map Jina image: {jina_semantic_index.ntotal:,} vector, 1024 chiều.")
 
-# Tải Metadata
-metadata_cache = {} 
-keyframe_time_cache = {} 
-print("Đang tải metadata từ 'map-keyframes'...")
-for csv_file in Path(MAP_KEYFRAMES_DIR).glob("**/*.csv"):
-    video_id = csv_file.stem
-    try:
-        df = pd.read_csv(csv_file)
-        metadata_cache[video_id] = df.set_index('n').to_dict('index')
-        df['pts_time'] = pd.to_numeric(df['pts_time'], errors='coerce')
-        df = df.dropna(subset=['pts_time'])
-        video_fps = None
-        if not df.empty and 'fps' in df.columns:
-            video_fps = float(df['fps'].iloc[0])
-        df = df.sort_values('pts_time')
-        times_list = df['pts_time'].tolist()
-        # Đảm bảo data_list là list các tuple [frame_n, frame_idx]
-        data_list = list(zip(df['n'].tolist(), df['frame_idx'].tolist()))
-        keyframe_time_cache[video_id] = {
-            "times": times_list, 
-            "data": data_list,
-            "fps": video_fps     
-        }
-    except Exception as e:
-        print(f"Lỗi khi xử lý file metadata {csv_file}: {e}")
-print("Tải metadata và index thời gian keyframe hoàn tất.")
-
-
-# Tải Media Info
-media_info_cache = {}
-print("Đang tải thông tin media từ 'media-info'...")
-for json_file in Path(MEDIA_INFO_DIR).glob("**/*.json"):
-    video_id = json_file.stem
-    with open(json_file, 'r', encoding='utf-8') as f:
-        media_info_cache[video_id] = json.load(f)
-print("Tải media info hoàn tất.")
+print("Loading ASR metadata...")
+asr_data, asr_corpus_tokenized, asr_video_map = load_asr_metadata(ASR_METADATA_DIR)
+print(f"Loaded {len(asr_data)} ASR segments from {len(asr_video_map)} videos.")
 
 # --- 6. XÂY DỰNG CÁC INDEX TÌM KIẾM ---
-
-# Index 1: FAISS
-print("Đang xây dựng index tìm kiếm với FAISS...")
-faiss.normalize_L2(image_embeddings)
-index = faiss.IndexFlatIP(image_embeddings.shape[1])
-index.add(image_embeddings)
-print("Xây dựng index FAISS hoàn tất!")
-
 
 # HÀM LÀM SẠCH OCR
 def clean_ocr_text(text):
@@ -335,19 +328,6 @@ def find_closest_keyframe(video_id, target_time):
     }
 # --- KẾT THÚC HÀM HELPER ---
 
-def translate_to_english(text):
-    if not groq_client: return text
-    try:
-        prompt = f"""Translate the following Vietnamese text to English.
-        Only output the translated text, nothing else.
-        Vietnamese text: "{text}"
-        English translation:"""
-        translated_text = groq_generate(prompt).strip()
-        print(f"Đã dịch '{text}' -> '{translated_text}'")
-        return translated_text
-    except Exception as e:
-        print(f"Lỗi khi dịch bằng Groq: {e}"); return text
-
 # --- 8. CÁC API ---
 
 # (XÓA BỎ) Hàm helper get_request_data()
@@ -355,119 +335,58 @@ def translate_to_english(text):
 
 # (CẬP NHẬT) Hàm chuẩn hóa đường dẫn web
 def get_web_path(original_path):
-    path_str = original_path.replace('\\', '/')
-    kf_index = path_str.find("Keyframes_")
-    if kf_index != -1:
-        sub_path = path_str[kf_index:] # VD: Keyframes_L21/L21_V001/001.jpg
-        web_path = "Keyframes/" + sub_path
-        
-        p = Path(sub_path)
-        video_id = p.parts[1] if len(p.parts) > 1 else "N/A"
-        frame_n_str = p.stem
-        
-        # (SỬA LỖI) Chỉ trả về frame_n nếu nó là số
-        if frame_n_str.isdigit():
-            return web_path, video_id, frame_n_str
+    return parse_keyframe_path(original_path)
 
-    return None, "N/A", None # Trả về None cho frame_n nếu không hợp lệ
 
-# === (THÊM MỚI) TẢI BEIT3 EMBEDDINGS + MODEL CHO FUSION SIMILAR SEARCH ===
-# BEIT3 (fine-grained, chỉ có vision tower - không có text tower) dùng để
-# kết hợp (fusion) với CLIP khi tìm ảnh tương tự bằng ảnh mẫu (Similar Search).
-BEIT3_TIMM_NAME = "beit3_base_patch16_224.in22k_ft_in1k"
-BEIT3_VECTORS_DIR = "beit3_vectors/vectors_beit3"
+def get_frame_web_path(video_id, frame_id):
+    meta = metadata_cache.get(video_id, {}).get(int(frame_id), {})
+    return meta.get('path')
 
-beit3_embeddings = None          # (N_beit3, 768) đã L2-normalize
-beit3_web_path_to_idx = {}       # web_path (giống format image_paths) -> row trong beit3_embeddings
-beit3_model = None
-beit3_transform = None
 
-print("Đang tải BEIT3 embeddings (fine-grained, cho fusion Similar Search)...")
-try:
-    beit3_dir = Path(BEIT3_VECTORS_DIR)
-    emb_chunks, all_beit3_paths = [], []
-    for emb_file in sorted(beit3_dir.glob("*_beit3_embeddings.npy")):
-        paths_file = emb_file.with_name(emb_file.name.replace("_embeddings.npy", "_paths.json"))
-        if not paths_file.exists():
-            continue
-        emb_chunks.append(np.load(emb_file).astype('float32'))
-        with open(paths_file, 'r', encoding='utf-8') as f:
-            all_beit3_paths.extend(json.load(f))
-    if emb_chunks:
-        beit3_embeddings = np.concatenate(emb_chunks, axis=0)
-        faiss.normalize_L2(beit3_embeddings)
-        for row_idx, p_str in enumerate(all_beit3_paths):
-            web_path, _, _ = get_web_path(p_str)
-            if web_path:
-                beit3_web_path_to_idx[web_path] = row_idx
-        print(f"Đã tải {beit3_embeddings.shape[0]} vector BEIT3, khớp {len(beit3_web_path_to_idx)} frame với CLIP.")
-    else:
-        print(f"CẢNH BÁO: Không tìm thấy shard BEIT3 nào trong '{BEIT3_VECTORS_DIR}'.")
-except Exception as e:
-    print(f"Lỗi khi tải BEIT3 embeddings: {e}")
-    beit3_embeddings = None
-
-try:
-    import timm
-    beit3_model = timm.create_model(BEIT3_TIMM_NAME, pretrained=True, num_classes=0)
-    beit3_model.eval().to(device)
-    beit3_data_cfg = timm.data.resolve_data_config({}, model=beit3_model)
-    beit3_transform = timm.data.create_transform(**beit3_data_cfg)
-    print(f"Model BEIT3 (timm) đã tải thành công lên {device.upper()}.")
-except Exception as e:
-    print(f"CẢNH BÁO: Không thể tải model BEIT3 ({e}). Similar Search sẽ chỉ dùng 100% CLIP.")
-    beit3_model = None
-    beit3_transform = None
-
-def encode_image_beit3(pil_image):
-    """Encode 1 ảnh PIL thành vector BEIT3 768-chiều đã L2-normalize. Trả None nếu model chưa sẵn sàng."""
-    if beit3_model is None or beit3_transform is None:
-        return None
+def get_neighbor_frame_ids(video_id, frame_id, radius):
+    frames = video_frame_ids.get(video_id, [])
     try:
-        with torch.no_grad():
-            tensor = beit3_transform(pil_image).unsqueeze(0).to(device)
-            feat = beit3_model(tensor)
-        vec = feat.detach().cpu().numpy().astype('float32')
-        faiss.normalize_L2(vec)
-        return vec[0]
-    except Exception as e:
-        print(f"Lỗi khi encode ảnh bằng BEIT3: {e}")
-        return None
+        position = frames.index(int(frame_id))
+    except ValueError:
+        return []
+    start = max(0, position - radius)
+    end = min(len(frames), position + radius + 1)
+    return frames[start:end]
 
-def fuse_clip_beit3_scores(candidate_indices, candidate_clip_sims, beit3_query_vec, alpha):
-    """
-    Kết hợp điểm CLIP (ngữ nghĩa) và BEIT3 (chi tiết/fine-grained) theo trọng số alpha.
-    alpha=1.0 -> 100% CLIP, alpha=0.0 -> 100% BEIT3. Ảnh không có vector BEIT3 (hiếm) coi beit3_sim=0.
-    Trả về list (idx, fused_score) đã sort giảm dần.
-    """
-    fused = []
-    for idx, clip_sim in zip(candidate_indices, candidate_clip_sims):
-        beit3_sim = 0.0
-        if beit3_query_vec is not None and beit3_embeddings is not None:
-            web_path, _, _ = get_web_path(image_paths[idx])
-            b_idx = beit3_web_path_to_idx.get(web_path) if web_path else None
-            if b_idx is not None:
-                beit3_sim = float(np.dot(beit3_embeddings[b_idx], beit3_query_vec))
-        fused.append((int(idx), alpha * float(clip_sim) + (1.0 - alpha) * beit3_sim))
-    fused.sort(key=lambda x: x[1], reverse=True)
-    return fused
-# === (KẾT THÚC) BEIT3 FUSION ===
 
 # === (THÊM MỚI) QUERY EXPANSION (Groq) - Theo "[AIC2026] - Query expansion.docx", PLAN A ===
-QUERY_EXPANSION_PROMPT_TEMPLATE = """Bạn là một chuyên gia tối ưu hóa tìm kiếm video chuyên nghiệp. Nhiệm vụ của bạn là mở rộng câu truy vấn gốc của người dùng thành 3 khía cạnh ngữ nghĩa khác nhau: mở rộng theo kiểu sát nghĩa; mở rộng nhấn mạnh vai trò; mở rộng nhấn mạnh nơi chốn. Việc này giúp bộ mã hóa của hệ thống dễ dàng so khớp không gian vector với các keyframes của video.
+QUERY_EXPANSION_PROMPT_TEMPLATE = """Bạn là chuyên gia viết truy vấn cho mô hình Jina đa phương thức trong bài toán Video Information Retrieval.
 
-Ví dụ, câu truy vấn gốc "cô gái nấu ăn" được mở rộng thành:
-- Sát nghĩa: "con gái nấu"
-- Nhấn mạnh vai trò: "nữ đầu bếp đang chuẩn bị món ăn"
-- Nhấn mạnh nơi chốn: "cô gái đang nấu nướng ở nhà bếp"
+Nhiệm vụ: Chuyển câu truy vấn tiếng Việt thành 3 biến thể tiếng Anh giàu chi tiết thị giác để đối chiếu với cả ảnh và caption tiếng Anh bằng Jina.
 
-Câu truy vấn gốc cần mở rộng: "{query}"
+QUY TẮC BẮT BỘC:
+1. LOẠI BỎ TỪ KHÔNG CÓ HÌNH ẢNH: Bỏ các từ chỉ cảm xúc ("vui vẻ", "thanh mát"), từ chỉ nhiệm vụ ("làm nhiệm vụ", "nghiên cứu"), địa danh chung chung ("miền Nam", "miền Tây").
+2. THỊ GIÁC HÓA (Visual Concretization): Dịch các khái niệm thành mô tả hình ảnh trực quan (Ví dụ: "loài chim ở Nam Bộ" -> dịch chi tiết đặc điểm màu lông, màu mắt của chim được mô tả trong câu).
+3. BẢO TOÀN THỰC THỂ (Entity Recall): KHÔNG ĐƯỢC BỎ SÓT bất kỳ đối tượng, màu sắc, trang phục, đồ vật phụ nào (như "khăn rằn", "ghe xanh", "hoa pansy", "chiếc túi giấy", "hộp đổ bóng").
+4. GIỮ NGUYÊN Ý NGHĨA: KHÔNG BỊẠ THÊM các chi tiết không có trong câu gốc.
 
-Chỉ trả lời bằng một object JSON hợp lệ duy nhất, không kèm giải thích, chú thích hay markdown, đúng định dạng:
-{{"paraphrase": "...", "role": "...", "location": "..."}}"""
+Ví dụ mẫu:
+Input: "Cảnh thu hoạch dứa: một bà cụ ngồi bên giỏ dứa trò chuyện với cô gái mặc áo hồng quàng khăn rằn; xung quanh chất đầy dứa, phía sau có người phụ nữ đội nón lá cầm trái dứa và một chiếc ghe xanh đậu cạnh bờ."
+
+JSON Output:
+{{
+  "dense_caption": "An elderly woman sitting next to a basket of pineapples talking to a girl wearing a pink shirt and a traditional checked scarf, surrounded by harvested pineapples, with a woman in a conical hat holding a pineapple behind them and a blue boat parked by the riverbank.",
+  "structured_entities": "elderly woman, basket of pineapples, girl in pink shirt, checked scarf, woman in conical hat, blue boat, riverbank, harvested pineapples",
+  "spatial_action_focus": "a girl in pink shirt and an elderly woman sitting near pineapples with a blue boat moored at the shore"
+}}
+
+Yêu cầu đầu ra cho câu truy vấn dưới đây:
+- "dense_caption": Dịch toàn bộ câu sang tiếng Anh Alt-text tự nhiên, giữ lại 100% chi tiết thị giác, màu sắc, vị trí.
+- "structured_entities": Liệt kê TẤT CẢ các cụm thực thể + thuộc tính (màu sắc, hình dáng) ngăn cách bằng dấu phẩy.
+- "spatial_action_focus": Tóm tắt mối quan hệ không gian và hành động cốt lõi giữa các chủ thể chính.
+
+Câu truy vấn gốc: "{query}"
+
+Chỉ trả về 1 Object JSON duy nhất, không thêm bất kỳ dòng giải thích hay ký tự markdown nào khác:
+{{"dense_caption": "...", "structured_entities": "...", "spatial_action_focus": "..."}}"""
 
 def expand_query_with_groq(query_text):
-    """Sinh 3 biến thể ngữ nghĩa (sát nghĩa / vai trò / nơi chốn) từ query gốc bằng Groq."""
+    """Mở rộng query bảo toàn tối đa chi tiết cho Jina image/caption retrieval."""
     if not groq_client:
         return []
     try:
@@ -475,9 +394,24 @@ def expand_query_with_groq(query_text):
         raw = groq_generate(prompt).strip()
         raw = re.sub(r'^```(json)?|```$', '', raw, flags=re.MULTILINE).strip()
         parsed = json.loads(raw)
-        variants = [parsed.get('paraphrase', ''), parsed.get('role', ''), parsed.get('location', '')]
+
+        # Lấy đầy đủ 3 biến thể giàu chi tiết
+        variants = [
+            parsed.get('dense_caption', ''),
+            parsed.get('structured_entities', ''),
+            parsed.get('spatial_action_focus', '')
+        ]
+
+        # Lọc bỏ chuỗi rỗng
         variants = [v.strip() for v in variants if v and v.strip()]
-        print(f"[QueryExpansion] '{query_text}' -> {variants}")
+
+        # Loại bỏ các biến thể trùng lặp nếu có
+        variants = list(dict.fromkeys(variants))
+
+        print(f"[QueryExpansion] Raw: '{query_text}'")
+        for idx, var in enumerate(variants, 1):
+            print(f"  └─ Variant {idx}: {var}")
+
         return variants
     except Exception as e:
         print(f"Lỗi khi mở rộng câu truy vấn bằng Groq: {e}")
@@ -505,7 +439,7 @@ def expand_query_endpoint():
 def reciprocal_rank_fusion(ranked_id_lists, k=60, weights=None):
     """RRF: mỗi list là danh sách index đã sort tốt nhất trước. Trả (idx, fused_score) sort giảm dần.
     weights (tuỳ chọn): trọng số tương ứng từng list theo thứ tự trong ranked_id_lists, mặc định bằng nhau
-    (dùng cho Fusion search: tỷ lệ CLIP/OCR/ASR do người dùng chỉnh)."""
+    (dùng cho Fusion search: tỷ lệ Jina Hybrid/OCR/ASR do người dùng chỉnh)."""
     if weights is None:
         weights = [1.0] * len(ranked_id_lists)
     scores = {}
@@ -558,6 +492,79 @@ def asr_candidates(query_text, search_size):
     return out
 # === (KẾT THÚC) OCR/ASR SEARCH HELPERS ===
 
+
+SEMANTIC_MODEL_LABELS = {
+    "jina": "Jina Embeddings v5",
+    "jina-hybrid": "Jina Image + Caption (RRF)",
+}
+
+
+def encode_semantic_query(query_text, semantic_model):
+    if semantic_model in {"jina", "jina-hybrid"}:
+        return jina_text_encoder.encode(query_text)
+    raise ValueError(
+        f"semantic_model không hợp lệ: {semantic_model!r}. "
+        f"Chọn một trong {sorted(SEMANTIC_MODEL_LABELS)}."
+    )
+
+
+def search_semantic_vectors(semantic_model, query_vector, top_k):
+    if semantic_model == "jina":
+        return jina_semantic_index.search(query_vector, top_k)
+    if semantic_model == "jina-hybrid":
+        if jina_caption_index is None:
+            raise ModelUnavailableError(jina_caption_index_reason)
+
+        # Hai nhánh có phân phối cosine khác nhau (image vs caption), nên gộp
+        # thứ hạng bằng RRF thay vì cộng trực tiếp raw similarity score.
+        # Normal search benefits from a wider pool; TRAKE already asks for
+        # 10k candidates, so cap here instead of expanding to 50k per branch.
+        branch_k = max(min(int(top_k) * 5, 10000), 100)
+        _, image_indices = jina_semantic_index.search(query_vector, branch_k)
+        _, caption_indices = jina_caption_index.search(query_vector, branch_k)
+        image_rank = [int(index_id) for index_id in image_indices[0] if index_id >= 0]
+        caption_rank = [
+            int(index_id) for index_id in caption_indices[0] if index_id >= 0
+        ]
+        fused = reciprocal_rank_fusion(
+            [image_rank, caption_rank],
+            weights=[1.0, 1.0],
+        )[: max(1, int(top_k))]
+        return (
+            np.asarray([[score for _, score in fused]], dtype=np.float32),
+            np.asarray([[index_id for index_id, _ in fused]], dtype=np.int64),
+        )
+    raise ValueError(f"semantic_model không hợp lệ: {semantic_model!r}")
+
+
+@app.route('/semantic_models', methods=['GET'])
+def semantic_models_status():
+    jina_available, jina_reason = jina_text_encoder.availability()
+    caption_available = jina_available and jina_caption_index is not None
+    caption_reason = (
+        jina_caption_index_reason if jina_available else jina_reason
+    )
+    return jsonify({
+        "models": {
+            "jina": {
+                "label": SEMANTIC_MODEL_LABELS["jina"],
+                "available": jina_available,
+                "dimension": jina_semantic_index.d,
+                "vectors": jina_semantic_index.ntotal,
+                "reason": jina_reason,
+            },
+            "jina-hybrid": {
+                "label": SEMANTIC_MODEL_LABELS["jina-hybrid"],
+                "available": caption_available,
+                "dimension": 1024,
+                "vectors": (
+                    jina_caption_index.ntotal if jina_caption_index is not None else 0
+                ),
+                "reason": caption_reason,
+            },
+        }
+    })
+
 # API /search
 # (TRONG app.py)
 # API /search (ĐÃ CẬP NHẬT)
@@ -569,11 +576,18 @@ def search():
         if data is None:
              return jsonify({"error": "Request phải là JSON"}), 400
              
-        query_text = data['query']
+        query_text = str(data.get('query', '')).strip()
+        if not query_text:
+            return jsonify({"error": "Query không được để trống."}), 400
         top_k = int(data.get('top_k', 50))
+        semantic_model = str(data.get('semantic_model', 'jina')).strip().lower()
+        if semantic_model not in SEMANTIC_MODEL_LABELS:
+            return jsonify({
+                "error": f"semantic_model không hợp lệ: {semantic_model!r}",
+                "allowed_models": sorted(SEMANTIC_MODEL_LABELS),
+            }), 400
         # (SỬA LỖI) Xử lý 'group' (là boolean true/false)
         group_results = data.get('group', False) 
-        should_translate = data.get('translate', False)
         
         # === (LOGIC MỚI) KIỂM TRA XEM QUERY CÓ PHẢI LÀ VIDEO ID KHÔNG ===
         
@@ -581,84 +595,62 @@ def search():
         video_id_query = query_text.strip().upper() 
         
         # Kiểm tra xem query này có nằm trong danh sách video ID ta có không
-        # (video_id_to_path_prefix được tạo khi khởi động server)
-        if video_id_query in video_id_to_path_prefix:
-            
-            print(f"Phát hiện tìm kiếm theo Video ID: {video_id_query}")
+        # Video IDs are discovered directly from OCR metadata.
+        if video_id_query in metadata_cache:
+            print(f"Video ID search detected: {video_id_query}")
             results = []
             summary = {}
-            
-            # Lấy prefix đường dẫn, ví dụ: "Keyframes_L22/L22_V002"
-            path_prefix = video_id_to_path_prefix[video_id_query] 
-            
-            # Lấy tất cả metadata cho video này
             video_meta = metadata_cache.get(video_id_query, {})
-            
-            if not video_meta:
-                return jsonify({"results": [], "summary": {}, "error": f"Không tìm thấy metadata cho video {video_id_query}"})
 
-            # Lặp qua tất cả các frame (n) trong metadata của video đó
-            for frame_n_int, meta in video_meta.items():
-                # Tạo web_path
-                # Ví dụ: "Keyframes/Keyframes_L22/L22_V002/001.jpg"
-                frame_n_str = str(frame_n_int).zfill(3)
-                web_path = f"Keyframes/{path_prefix}/{frame_n_str}.jpg"
-                
-                pts_time = meta.get('pts_time', 0) if meta and meta.get('pts_time') else 0
-                
+            for frame_id, meta in video_meta.items():
+                web_path = meta.get('path')
+                if not web_path:
+                    continue
+                pts_time = float(meta.get('pts_time', 0) or 0)
                 results.append({
-                    "path": web_path, 
-                    "videoId": video_id_query, 
-                    "score": float(pts_time), # Dùng pts_time làm score để sort
-                    "pts_time": float(pts_time)
+                    "path": web_path,
+                    "videoId": video_id_query,
+                    "score": pts_time,
+                    "pts_time": pts_time
                 })
 
             summary[video_id_query] = len(results)
-            
-            # Sắp xếp theo thời gian
-            final_results = sorted(results, key=lambda x: x['pts_time'])
-            
-            # Cắt theo top_k (mặc dù ta lấy hết, nhưng vẫn tôn trọng top_k)
-            final_results = final_results[:top_k]
-            
-            # Nếu user có check "Group", thì ta group lại
+            final_results = sorted(results, key=lambda item: item['pts_time'])[:top_k]
             if group_results:
-                final_grouped_results = {video_id_query: final_results}
-                return jsonify({"results": final_grouped_results, "summary": summary})
-            else:
-                return jsonify({"results": final_results, "summary": summary})
-        
+                return jsonify({
+                    "results": {video_id_query: final_results},
+                    "summary": summary
+                })
+            return jsonify({"results": final_results, "summary": summary})
+
         # === (KẾT THÚC LOGIC MỚI) ===
         
         # Nếu không phải là Video ID, chạy logic tìm kiếm semantic CŨ
-        print(f"Đang tìm kiếm semantic cho: '{query_text}'")
+        print(
+            f"Đang tìm kiếm semantic bằng {SEMANTIC_MODEL_LABELS[semantic_model]} "
+            f"cho: '{query_text}'"
+        )
 
-        if should_translate:
-            english_query = translate_to_english(query_text)
-        else:
-            print("Bỏ qua bước dịch, tìm kiếm trực tiếp.")
-            english_query = query_text
+        # Jina nhận query tiếng Việt trực tiếp; caption tiếng Anh vẫn nằm trong
+        # cùng không gian multilingual nên không cần dịch trước khi encode.
+        search_query = query_text
 
-        with torch.no_grad():
-            inputs = processor(text=[english_query], return_tensors="pt", padding=True, truncation=True).to(device)
-            text_features = model.get_text_features(**inputs)
-
-        query_vector = text_features.cpu().numpy().astype('float32')
-        faiss.normalize_L2(query_vector)
+        query_vector = encode_semantic_query(search_query, semantic_model)
 
         pool_k = top_k * 5 if group_results else top_k
 
-        clip_sim_by_idx = {}
-        distances, indices = index.search(query_vector, pool_k)
-        ordered_indices = [int(i) for i in indices[0]]
+        semantic_score_by_idx = {}
+        distances, indices = search_semantic_vectors(semantic_model, query_vector, pool_k)
+        ordered_indices = [int(i) for i in indices[0] if int(i) >= 0]
         for i, dist in zip(indices[0], distances[0]):
-            clip_sim_by_idx[int(i)] = float(dist)
+            if int(i) >= 0:
+                semantic_score_by_idx[int(i)] = float(dist)
 
         results = []
         summary = {}
 
         for i in ordered_indices:
-            original_path = image_paths[i]
+            original_path = image_records[int(i)]['path']
             web_path, video_id, frame_n_str = get_web_path(original_path)
 
             # (SỬA LỖI) Thêm check frame_n_str (không phải None)
@@ -670,31 +662,12 @@ def search():
                 results.append({
                     "path": web_path,
                     "videoId": video_id,
-                    "score": clip_sim_by_idx.get(i, 0.0),
+                    "score": semantic_score_by_idx.get(i, 0.0),
                     "pts_time": float(pts_time)
                 })
                 summary[video_id] = summary.get(video_id, 0) + 1
 
         sorted_summary = dict(sorted(summary.items(), key=lambda item: item[1], reverse=True))
-
-        # === RERANK BẰNG BLIP-ITM (CHỈ TOP-10 ĐỂ TRÁNH TIMEOUT) ===
-        ENABLE_RERANKER = False
-        RERANK_TOP_N = 10  # Chỉ rerank 10 ảnh đầu tiên
-        if ENABLE_RERANKER and reranker is not None:
-            # Sắp xếp theo score ban đầu của FAISS trước
-            results_sorted_by_faiss = sorted(results, key=lambda x: x['score'], reverse=True)
-            top_n = results_sorted_by_faiss[:RERANK_TOP_N]
-            rest = results_sorted_by_faiss[RERANK_TOP_N:]
-
-            print(f"Đang rerank {len(top_n)} ảnh đầu bằng BLIP-ITM...")
-            for r in top_n:
-                r['image_path'] = r['path']
-            reranked_top = reranker.rerank(english_query, top_n, image_base_dir=".")
-            for r in reranked_top:
-                r['score'] = r.get('itm_score', r['score'])
-
-            # Ghép lại: top-10 đã rerank + phần còn lại giữ nguyên thứ tự FAISS
-            results = reranked_top + rest
 
         if group_results:
             grouped_results = {}
@@ -710,12 +683,26 @@ def search():
                 sorted_items = sorted(items, key=lambda x: x['pts_time'])
                 final_grouped_results[video_id] = sorted_items[:top_k] 
             
-            return jsonify({"results": final_grouped_results, "summary": sorted_summary})
+            return jsonify({
+                "results": final_grouped_results,
+                "summary": sorted_summary,
+                "semantic_model": semantic_model,
+            })
         else:
-            final_results = results[:top_k] # Đã được Reranker sắp xếp sẵn
-            return jsonify({"results": final_results, "summary": sorted_summary})
+            final_results = results[:top_k]
+            return jsonify({
+                "results": final_results,
+                "summary": sorted_summary,
+                "semantic_model": semantic_model,
+            })
 
-    except Exception as e: 
+    except ModelUnavailableError as e:
+        print(f"Model semantic chưa sẵn sàng: {e}")
+        return jsonify({"error": str(e), "semantic_model": semantic_model}), 503
+    except ValueError as e:
+        print(f"Request /search không hợp lệ: {e}")
+        return jsonify({"error": str(e)}), 400
+    except Exception as e:
         print(f"Lỗi trong /search: {e}")
         return jsonify({"error": str(e)}), 500
 
@@ -729,13 +716,6 @@ def search_similar_image():
         group_results = data.get('group', 'false').lower() == 'true'
         # (THÊM MỚI) Tham số auto_crop từ nút Toggle trên giao diện
         auto_crop = data.get('auto_crop', 'false').lower() == 'true'
-        # (THÊM MỚI) Trọng số fusion CLIP/BEIT3 từ thanh trượt UI (1.0 = 100% CLIP, 0.0 = 100% BEIT3)
-        try:
-            beit3_alpha = float(data.get('beit3_weight', 1.0))
-        except (TypeError, ValueError):
-            beit3_alpha = 1.0
-        beit3_alpha = max(0.0, min(1.0, beit3_alpha))
-
         if 'image_file' not in request.files:
             return jsonify({"error": "Không có tệp ảnh nào được tải lên."}), 400
 
@@ -806,51 +786,23 @@ def search_similar_image():
                 torch.cuda.empty_cache()
         # --- KẾT THÚC BƯỚC TIỀN XỬ LÝ ---
 
-        # Đưa target_image (gốc hoặc đã crop) vào CLIP
-        with torch.no_grad():
-            inputs = processor(images=[target_image], return_tensors="pt").to(device)
-            image_features = model.get_image_features(**inputs)
+        # Ảnh query và toàn bộ keyframe đều dùng cùng Jina retrieval space.
+        query_vector = jina_text_encoder.encode_image(target_image)
 
-        query_vector = image_features.cpu().numpy().astype('float32')
-        faiss.normalize_L2(query_vector)
-
-        # Dọn dẹp sau CLIP inference
-        del inputs, image_features
+        # Dọn dẹp sau Jina inference
         if device == "cuda":
             torch.cuda.empty_cache()
         gc.collect()
 
-        # (THÊM MỚI) Encode BEIT3 cho ảnh query (chỉ khi slider không ở 100% CLIP)
-        beit3_query_vec = None
-        if beit3_alpha < 1.0:
-            beit3_query_vec = encode_image_beit3(target_image)
-            if beit3_query_vec is None:
-                print("CẢNH BÁO: Model/vector BEIT3 không sẵn sàng, fallback về 100% CLIP.")
-                beit3_alpha = 1.0
-
-        # (THÊM MỚI) Khi có fusion, lấy pool ứng viên rộng hơn từ CLIP rồi rerank lại bằng BEIT3
-        if beit3_query_vec is not None:
-            pool_k = min(max(top_k * 20, 500), 5000)
-        else:
-            pool_k = top_k * 5 if group_results else top_k
-
-        distances, indices = index.search(query_vector, pool_k)
-
-        if beit3_query_vec is not None:
-            ordered = fuse_clip_beit3_scores(indices[0], distances[0], beit3_query_vec, beit3_alpha)
-            # (SỬA LỖI) pool_k dùng cho fusion rerank rộng hơn nhiều so với số kết quả thực trả về
-            # (500-5000 ứng viên) -> phải cắt về đúng số lượng cần thiết TRƯỚC khi build summary,
-            # nếu không summary sẽ thống kê nhầm theo cả pool ứng viên bị loại chứ không phải kết quả thật.
-            needed = top_k * 5 if group_results else top_k
-            ordered = ordered[:needed]
-        else:
-            ordered = [(int(i), float(dist)) for i, dist in zip(indices[0], distances[0])]
+        pool_k = top_k * 5 if group_results else top_k
+        distances, indices = jina_semantic_index.search(query_vector, pool_k)
+        ordered = [(int(i), float(dist)) for i, dist in zip(indices[0], distances[0])]
 
         results = []
         summary = {}
 
         for i, score in ordered:
-            original_path = image_paths[i]
+            original_path = image_records[int(i)]['path']
             web_path, video_id, frame_n_str = get_web_path(original_path)
 
             if web_path and frame_n_str:
@@ -887,6 +839,8 @@ def search_similar_image():
             final_results = sorted(results, key=lambda x: x['score'], reverse=True)[:top_k]
             return jsonify({"results": final_results, "summary": sorted_summary})
 
+    except ModelUnavailableError as e:
+        return jsonify({"error": str(e)}), 503
     except Exception as e:
         print(f"Lỗi trong /search_similar_image: {e}")
         return jsonify({"error": str(e)}), 500
@@ -968,7 +922,7 @@ def search_ocr():
 # Bản mới làm đúng 2 giai đoạn theo mô tả của BTC:
 #   1. Retrieval  - tìm video chứa toàn bộ chuỗi sự kiện (gộp điểm mọi sự kiện theo từng video).
 #   2. Alignment  - trong mỗi video, chọn cho mỗi sự kiện đúng 1 keyframe sao cho thứ tự thời gian
-#                   được giữ nguyên (frame sự kiện 1 < frame sự kiện 2 < ...) và tổng điểm CLIP lớn nhất,
+#                   được giữ nguyên và tổng điểm Jina Hybrid lớn nhất,
 #                   ĐỒNG THỜI phạt nặng khi 2 sự kiện liên tiếp cách nhau quá xa về thời gian.
 # Giai đoạn 2 là bài toán quy hoạch động (DP) - xem _align_event_sequence().
 TRAKE_DEFAULT_MAX_GAP_SECONDS = 30.0   # trong khoảng này thì không phạt
@@ -978,7 +932,7 @@ TRAKE_DEFAULT_GAP_PENALTY = 0.01       # phạt mỗi giây vượt ngưỡng; v
 def _align_event_sequence(candidate_frames, frame_times, event_scores, n_events,
                           max_gap_seconds=TRAKE_DEFAULT_MAX_GAP_SECONDS,
                           gap_penalty_per_sec=TRAKE_DEFAULT_GAP_PENALTY):
-    """Chọn chuỗi frame TĂNG DẦN (mỗi sự kiện 1 frame), tối đa hoá tổng điểm CLIP TRỪ ĐI tiền phạt
+    """Chọn chuỗi frame tăng dần, tối đa hoá tổng điểm Jina Hybrid trừ tiền phạt
     khoảng cách thời gian giữa 2 sự kiện liên tiếp.
 
     Một chuỗi hành động (chạy đà -> giậm nhảy -> ...) diễn ra liên tục trong vài chục giây, nên nếu
@@ -988,7 +942,7 @@ def _align_event_sequence(candidate_frames, frame_times, event_scores, n_events,
 
     candidate_frames: list frame_n (int) đã sort tăng dần - các keyframe ứng viên của 1 video.
     frame_times:      list pts_time (giây) song song với candidate_frames, cũng tăng dần.
-    event_scores:     dict[(event_index, frame_n)] -> điểm CLIP. Thiếu key = sự kiện đó không
+    event_scores:     dict[(event_index, frame_n)] -> điểm Jina Hybrid. Thiếu key = sự kiện đó không
                       khớp frame đó (tính 0 điểm, vẫn cho chọn để giữ chuỗi liền mạch).
     Trả (total_score, [frame_n cho từng sự kiện]) hoặc None nếu không xếp được chuỗi hợp lệ.
     """
@@ -1043,8 +997,6 @@ def search_trake_02():
             return jsonify({"error": "Request phải là JSON"}), 400
 
         top_k_final = int(data.get('top_k', 50))
-        should_translate = data.get('translate', True)
-
         # Mỗi phần tử là MỘT SỰ KIỆN, theo đúng thứ tự thời gian trong video.
         # UI gửi mảng 'events' (mỗi sự kiện một ô nhập riêng); vẫn chấp nhận chuỗi 'query'
         # ngăn bằng ';' để gọi API trực tiếp bằng script/curl cho tiện.
@@ -1070,36 +1022,33 @@ def search_trake_02():
         print(f"[TRAKE] Temporal alignment: {n_events} sự kiện, pool_k={pool_k}, "
               f"min_events={min_events}, max_gap={max_gap_seconds}s, penalty={gap_penalty_per_sec}/s")
 
-        # video_event_scores[video_id][(event_index, frame_n)] = điểm CLIP tốt nhất
+        # video_event_scores[video_id][(event_index, frame_n)] = điểm Hybrid tốt nhất
         video_event_scores = collections.defaultdict(dict)
         # video_matched_events[video_id] = tập các event_index thực sự có hit trong video đó
         video_matched_events = collections.defaultdict(set)
 
-        # Dịch + encode TẤT CẢ sự kiện một lượt, rồi search FAISS theo batch (1 lượt quét index cho
-        # cả N sự kiện, nhanh hơn hẳn so với gọi index.search() riêng từng sự kiện).
-        event_queries = [translate_to_english(p) if should_translate else p for p in parts]
+        # Jina đa ngôn ngữ nhận trực tiếp toàn bộ sự kiện tiếng Việt.
+        event_queries = parts
         for i, q in enumerate(event_queries):
             print(f"  [Sự kiện {i + 1}/{n_events}] '{q}'")
 
-        with torch.no_grad():
-            inputs = processor(text=event_queries, return_tensors="pt", padding=True, truncation=True).to(device)
-            text_features = model.get_text_features(**inputs)
-        query_vectors = text_features.cpu().numpy().astype('float32')
-        faiss.normalize_L2(query_vectors)
-
-        distances, indices = index.search(query_vectors, pool_k)  # shape: (n_events, pool_k)
-
+        query_vectors = jina_text_encoder.encode_texts(event_queries)
         for event_index in range(n_events):
-            for idx, dist in zip(indices[event_index], distances[event_index]):
+            distances, indices = search_semantic_vectors(
+                "jina-hybrid", query_vectors[event_index:event_index + 1], pool_k
+            )
+            for idx, dist in zip(indices[0], distances[0]):
                 idx = int(idx)
                 if idx < 0:
                     continue
-                web_path, video_id, frame_n_str = get_web_path(image_paths[idx])
+                web_path, video_id, frame_n_str = get_web_path(image_records[int(idx)]['path'])
                 if not web_path or not frame_n_str or video_id == "N/A":
                     continue
                 frame_n = int(frame_n_str)
                 key = (event_index, frame_n)
-                score = float(dist)
+                # RRF tối đa xấp xỉ 2/61. Scale về gần [0, 1] để giữ nguyên
+                # ý nghĩa của gap_penalty_per_sec trong thuật toán alignment.
+                score = float(dist) * 30.5
                 scores_of_video = video_event_scores[video_id]
                 if score > scores_of_video.get(key, float('-inf')):
                     scores_of_video[key] = score
@@ -1109,9 +1058,6 @@ def search_trake_02():
         sequences = []
         for video_id, event_scores in video_event_scores.items():
             if len(video_matched_events[video_id]) < min_events:
-                continue
-            prefix = video_id_to_path_prefix.get(video_id)
-            if not prefix:
                 continue
 
             video_meta = metadata_cache.get(video_id, {})
@@ -1150,7 +1096,7 @@ def search_trake_02():
                 events_out.append({
                     "event_index": event_index,
                     "query": parts[event_index],
-                    "path": f"Keyframes/{prefix}/{str(frame_n).zfill(3)}.jpg",
+                    "path": get_frame_web_path(video_id, frame_n),
                     "videoId": video_id,
                     "frame_n": int(frame_n),
                     # frame_idx = chỉ số frame thật trong video -> dùng thẳng để nộp đáp án TRAKE
@@ -1186,6 +1132,8 @@ def search_trake_02():
             "mode": "trake_temporal"
         })
 
+    except ModelUnavailableError as e:
+        return jsonify({"error": str(e)}), 503
     except Exception as e:
         print(f"Lỗi trong /search_trake_02: {e}")
         return jsonify({"error": str(e)}), 500
@@ -1222,23 +1170,20 @@ def search_trake_image():
         # Key: video_id, Value: count (for summary)
         summary_counter = collections.defaultdict(int)
         
-        with torch.no_grad():
-            for img_index, file in enumerate(image_files):
+        for img_index, file in enumerate(image_files):
                 # Xử lý từng ảnh
                 if file.filename == '': continue
                 image = Image.open(io.BytesIO(file.read())).convert("RGB")
-                
-                inputs = processor(images=[image], return_tensors="pt").to(device)
-                image_features = model.get_image_features(**inputs)
-                
-                query_vector = image_features.cpu().numpy().astype('float32')
-                faiss.normalize_L2(query_vector)
+
+                query_vector = jina_text_encoder.encode_image(image)
                 
                 # Tìm n1 frames cho ảnh này
-                distances, indices = index.search(query_vector, top_k_per_image)
+                distances, indices = jina_semantic_index.search(
+                    query_vector, top_k_per_image
+                )
                 
                 for i, dist in zip(indices[0], distances[0]):
-                    original_path = image_paths[i]
+                    original_path = image_records[int(i)]['path']
                     web_path, video_id, frame_n_str = get_web_path(original_path)
                     
                     if web_path and frame_n_str:
@@ -1246,33 +1191,25 @@ def search_trake_image():
                         video_meta = metadata_cache.get(video_id, {})
                         
                         # (CẬP NHẬT) Quét cửa sổ +/- window_size
-                        for offset in range(-window_size, window_size + 1):
-                            neighbor_n = frame_n_int + offset
-                            if neighbor_n in video_meta:
-                                neighbor_str = str(neighbor_n).zfill(3)
-                                frame_key = (video_id, neighbor_str)
-                                
-                                # Cập nhật điểm cao nhất nếu xuất hiện nhiều lần trong window
-                                current_best = frame_image_scores[frame_key].get(img_index, -1000.0)
-                                if float(dist) > current_best:
-                                    frame_image_scores[frame_key][img_index] = float(dist)
-                                
-                                if frame_key not in frame_info_cache:
-                                    meta = video_meta[neighbor_n]
-                                    pts_time = meta.get('pts_time', 0) if meta else 0
-                                    
-                                    prefix = video_id_to_path_prefix.get(video_id)
-                                    if prefix:
-                                        neighbor_web_path = f"Keyframes/{prefix}/{neighbor_str}.jpg"
-                                    else:
-                                        neighbor_web_path = web_path.replace(f"{frame_n_str}.jpg", f"{neighbor_str}.jpg")
-                                        
-                                    frame_info_cache[frame_key] = {
-                                        "path": neighbor_web_path,
-                                        "videoId": video_id,
-                                        "pts_time": float(pts_time)
-                                    }
-        
+                        for neighbor_n in get_neighbor_frame_ids(video_id, frame_n_int, window_size):
+                            frame_key = (video_id, neighbor_n)
+
+                            current_best = frame_image_scores[frame_key].get(img_index, -1000.0)
+                            if float(dist) > current_best:
+                                frame_image_scores[frame_key][img_index] = float(dist)
+
+                            if frame_key not in frame_info_cache:
+                                meta = video_meta[neighbor_n]
+                                neighbor_web_path = meta.get('path')
+                                if not neighbor_web_path:
+                                    continue
+                                pts_time = float(meta.get('pts_time', 0) or 0)
+                                frame_info_cache[frame_key] = {
+                                    "path": neighbor_web_path,
+                                    "videoId": video_id,
+                                    "pts_time": pts_time
+                                }
+
         # Lọc kết quả dựa trên số "common images"
         all_results = []
         for frame_key, imgs_dict in frame_image_scores.items():
@@ -1312,10 +1249,12 @@ def search_trake_image():
             final_results = sorted(all_results, key=lambda x: (-x['score'], x['pts_time']))
             return jsonify({"results": final_results[:top_k_final], "summary": sorted_summary})
             
+    except ModelUnavailableError as e:
+        return jsonify({"error": str(e)}), 503
     except Exception as e:
         print(f"Lỗi trong /search_trake_image: {e}")
         return jsonify({"error": str(e)}), 500
-# (CẬP NHẬT) API /search_asr - Dùng ElasticSearch thay BM25
+# API /search_asr - tìm trực tiếp trên từng ASR segment bằng BM25.
 @app.route('/search_asr', methods=['POST'])
 def search_asr():
     try:
@@ -1335,76 +1274,28 @@ def search_asr():
         if not top_k_documents and not bm25_asr_index:
             return jsonify({"error": "Chưa có dữ liệu ASR (bm25_asr_index chưa khởi tạo)."}), 500
 
-        # === PIPELINE GIỮA NGUYÊN: stitching + keyframe mapping ===
+        # ASR hiện tại đã chia thành các segment dài, vì vậy trả từng segment
+        # độc lập. Cơ chế stitch previous/current/next dành cho bộ ASR segment
+        # ngắn trước đây đã được đưa vào backlog.
         final_results = []
-        processed_segments_key = set()
         summary = {}
-        tokenized_query = query_text.lower().split()
-
-        def contains_keyword(text, query_tokens):
-            text_lower = text.lower()
-            for token in query_tokens:
-                if token in text_lower:
-                    return True
-            return False
 
         for doc in top_k_documents:
             video_id = doc['video_id']
-            doc_key = f"{video_id}_{doc['start']}"
-            if doc_key in processed_segments_key:
-                continue
+            final_doc = doc.copy()
 
-            current_merge_group = [doc]
-            processed_segments_key.add(doc_key)
-            video_segments_list = asr_video_map.get(video_id, [])
-
-            # Tìm vị trí segment trong danh sách theo start time
-            seg_idx = None
-            for i, seg in enumerate(video_segments_list):
-                if abs(seg.get('start', -1) - doc['start']) < 0.5:
-                    seg_idx = i
-                    break
-
-            if seg_idx is not None:
-                prev_index = seg_idx - 1
-                if prev_index >= 0:
-                    prev_segment = video_segments_list[prev_index]
-                    if contains_keyword(prev_segment['text'], tokenized_query):
-                        current_merge_group.insert(0, prev_segment)
-                        processed_segments_key.add(f"{video_id}_{prev_segment.get('start','')}")
-
-                next_index = seg_idx + 1
-                if next_index < len(video_segments_list):
-                    next_segment = video_segments_list[next_index]
-                    if contains_keyword(next_segment['text'], tokenized_query):
-                        current_merge_group.append(next_segment)
-                        processed_segments_key.add(f"{video_id}_{next_segment.get('start','')}")
-
-            if len(current_merge_group) == 1:
-                final_doc = doc.copy()
-            else:
-                final_doc = {
-                    "video_id": video_id,
-                    "text":     " + ".join([seg['text'] for seg in current_merge_group]),
-                    "start":    current_merge_group[0]['start'],
-                    "end":      current_merge_group[-1]['end'],
-                    "score":    doc['score']
-                }
-
-            media_info = media_info_cache.get(video_id, {})
-            final_doc['watch_url'] = media_info.get('watch_url')
+            final_doc['watch_url'] = video_url_cache.get(video_id)
 
             target_start_time = final_doc['start']
             closest_frame_data = find_closest_keyframe(video_id, target_start_time)
             final_doc['frame_n']   = closest_frame_data.get('frame_n')
             final_doc['frame_idx'] = closest_frame_data.get('frame_idx')
 
-            final_doc['web_path'] = None
-            prefix = video_id_to_path_prefix.get(video_id)
             frame_n = final_doc['frame_n']
-            if prefix and frame_n is not None:
-                final_doc['web_path'] = f"Keyframes/{prefix}/{str(frame_n).zfill(3)}.jpg"
-            
+            final_doc['web_path'] = (
+                get_frame_web_path(video_id, frame_n) if frame_n is not None else None
+            )
+
             final_results.append(final_doc)
             summary[video_id] = summary.get(video_id, 0) + 1
         
@@ -1435,11 +1326,9 @@ def search_asr():
         return jsonify({"error": str(e)}), 500
 
 
-# (THÊM MỚI) API /search_fusion - Gộp CLIP (semantic) + OCR + ASR bằng Reciprocal Rank Fusion có trọng số
+# API /search_fusion - Gộp Jina Hybrid + OCR + ASR bằng RRF có trọng số.
 # Mỗi khoảnh khắc được định danh bằng (video_id, frame_n) để gộp điểm giữa 3 nguồn có thang đo khác nhau
-# (CLIP: cosine similarity, OCR/ASR: điểm BM25 - không thể so trực tiếp được).
-# 3 ô query riêng (CLIP/OCR/ASR) vì nội dung mong muốn cho từng nguồn thường khác nhau: CLIP cần mô tả
-# cảnh bằng tiếng Anh, OCR/ASR cần đúng từ khoá tiếng Việt xuất hiện trên màn hình/lời thoại.
+# (Jina Hybrid: RRF image/caption, OCR/ASR: điểm BM25 - không thể cộng trực tiếp).
 @app.route('/search_fusion', methods=['POST'])
 def search_fusion():
     try:
@@ -1447,25 +1336,23 @@ def search_fusion():
         if data is None:
             return jsonify({"error": "Request phải là JSON"}), 400
 
-        query_clip = data.get('query_clip', '').strip()
+        query_jina = data.get('query_jina', '').strip()
         query_ocr = data.get('query_ocr', '').strip()
         query_asr = data.get('query_asr', '').strip()
-        if not query_clip and not query_ocr and not query_asr:
+        if not query_jina and not query_ocr and not query_asr:
             return jsonify({"results": [], "summary": {}})
 
         # Trọng số thô (mặc định bằng nhau) - chỉ tỷ lệ tương đối giữa 3 số này mới ảnh hưởng thứ hạng RRF,
         # nên không cần chuẩn hoá về tổng=1 trước khi tính.
-        weight_clip = float(data.get('weight_clip', 1.0))
+        weight_jina = float(data.get('weight_jina', 1.0))
         weight_ocr = float(data.get('weight_ocr', 1.0))
         weight_asr = float(data.get('weight_asr', 1.0))
 
         top_k = int(data.get('top_k', 50))
         group_results = data.get('group', False)
-        should_translate = data.get('translate', True)
-
         pool_k = max(top_k * 5, 100)
 
-        clip_ranked_keys, ocr_ranked_keys, asr_ranked_keys = [], [], []
+        jina_ranked_keys, ocr_ranked_keys, asr_ranked_keys = [], [], []
         key_info = {}
         key_sources = collections.defaultdict(set)
 
@@ -1478,29 +1365,24 @@ def search_fusion():
                     "pts_time": float(pts_time) if pts_time else 0.0
                 }
 
-        # --- 1. Nhánh CLIP (semantic, FAISS) ---
-        if query_clip:
+        # --- 1. Nhánh Jina Hybrid (Jina image + Jina caption) ---
+        if query_jina:
             try:
-                english_query = translate_to_english(query_clip) if should_translate else query_clip
-                with torch.no_grad():
-                    inputs = processor(text=[english_query], return_tensors="pt", padding=True, truncation=True).to(device)
-                    text_features = model.get_text_features(**inputs)
-                query_vector = text_features.cpu().numpy().astype('float32')
-                faiss.normalize_L2(query_vector)
-                distances, indices = index.search(query_vector, pool_k)
+                query_vector = encode_semantic_query(query_jina, "jina-hybrid")
+                _, indices = search_semantic_vectors("jina-hybrid", query_vector, pool_k)
                 for i in indices[0]:
                     i = int(i)
                     if i < 0:
                         continue
-                    web_path, video_id, frame_n_str = get_web_path(image_paths[i])
+                    web_path, video_id, frame_n_str = get_web_path(image_records[int(i)]['path'])
                     if web_path and frame_n_str:
                         frame_n_int = int(frame_n_str)
                         key = (video_id, frame_n_int)
-                        clip_ranked_keys.append(key)
+                        jina_ranked_keys.append(key)
                         meta = metadata_cache.get(video_id, {}).get(frame_n_int, {})
-                        register(key, web_path, video_id, meta.get('pts_time', 0) if meta else 0, "CLIP")
+                        register(key, web_path, video_id, meta.get('pts_time', 0) if meta else 0, "JINA_HYBRID")
             except Exception as e:
-                print(f"[Fusion] Lỗi nhánh CLIP: {e}")
+                print(f"[Fusion] Lỗi nhánh Jina Hybrid: {e}")
 
         # --- 2. Nhánh OCR (BM25 tự implement) ---
         if query_ocr:
@@ -1527,11 +1409,12 @@ def search_fusion():
                         continue
                     closest = find_closest_keyframe(video_id, src.get("start", 0.0))
                     frame_n = closest.get('frame_n')
-                    prefix = video_id_to_path_prefix.get(video_id)
-                    if frame_n is None or not prefix:
+                    if frame_n is None:
                         continue
                     frame_n_int = int(frame_n)
-                    web_path = f"Keyframes/{prefix}/{str(frame_n_int).zfill(3)}.jpg"
+                    web_path = get_frame_web_path(video_id, frame_n_int)
+                    if not web_path:
+                        continue
                     key = (video_id, frame_n_int)
                     asr_ranked_keys.append(key)
                     meta = metadata_cache.get(video_id, {}).get(frame_n_int, {})
@@ -1540,15 +1423,15 @@ def search_fusion():
             except Exception as e:
                 print(f"[Fusion] Lỗi nhánh ASR: {e}")
 
-        # --- 4. Gộp bằng RRF có trọng số (tỷ lệ CLIP/OCR/ASR do người dùng chỉnh qua slider) ---
+        # --- 4. Gộp bằng RRF có trọng số ---
         branches = [
-            (clip_ranked_keys, weight_clip),
+            (jina_ranked_keys, weight_jina),
             (ocr_ranked_keys, weight_ocr),
             (asr_ranked_keys, weight_asr),
         ]
         branches = [(lst, w) for lst, w in branches if lst]
         if not branches:
-            return jsonify({"results": [], "summary": {}, "error": "Không có nhánh nào (CLIP/OCR/ASR) trả về kết quả."})
+            return jsonify({"results": [], "summary": {}, "error": "Không có nhánh nào (Jina Hybrid/OCR/ASR) trả về kết quả."})
 
         ranked_lists = [lst for lst, _ in branches]
         weights = [w for _, w in branches]
@@ -1566,7 +1449,7 @@ def search_fusion():
                 "videoId": video_id,
                 "score": float(score),
                 "pts_time": info["pts_time"],
-                "matched_by": sorted(key_sources[key])  # ví dụ ["CLIP", "OCR"] - để UI hiện badge nguồn khớp
+                "matched_by": sorted(key_sources[key])
             })
             summary[video_id] = summary.get(video_id, 0) + 1
 
@@ -1599,41 +1482,35 @@ def search_fusion():
 def get_metadata():
     try:
         image_path = request.json['image_path']
-        # (SỬA LỖI) Xử lý đường dẫn đến từ web (đã có Keyframes/)
-        p = Path(image_path.replace("Keyframes/", "")) # Bỏ prefix
-        # Giả định cấu trúc: Keyframes_XXX/VIDEO_ID/frame.jpg
-        video_id = p.parts[-2]
-        frame_n = int(p.stem)
-        meta = metadata_cache.get(video_id, {}).get(frame_n, {})
-        media_info = media_info_cache.get(video_id, {})
-        meta['n'] = frame_n
-        watch_url = media_info.get('watch_url')
-        if watch_url and 'pts_time' in meta and meta['pts_time'] is not None:
-            seconds = int(float(meta['pts_time']))
-            meta['playback_url'] = f"{watch_url}&t={seconds}s"
+        _, video_id, frame_id_str = get_web_path(image_path)
+        if not frame_id_str or video_id == "N/A":
+            raise ValueError(f"Invalid keyframe path: {image_path}")
+        frame_id = int(frame_id_str)
+        meta = dict(metadata_cache.get(video_id, {}).get(frame_id, {}))
+        meta['n'] = frame_id
+        watch_url = video_url_cache.get(video_id)
+        if watch_url and meta.get('pts_time') is not None:
+            separator = '&' if '?' in watch_url else '?'
+            meta['playback_url'] = f"{watch_url}{separator}t={int(float(meta['pts_time']))}s"
         else:
             meta['playback_url'] = watch_url
         return jsonify(meta)
-    except Exception as e: return jsonify({"error": str(e)}), 500
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
 
 # (CẬP NHẬT) API /neighbor_frames
 @app.route('/neighbor_frames', methods=['POST'])
 def get_neighbor_frames():
     try:
         image_path = request.json['image_path']
-        p = Path(image_path.replace("Keyframes/", "")) # Bỏ prefix
-        video_id = p.parts[-2]
-        frame_n = int(p.stem)
-        video_frames = sorted(metadata_cache.get(video_id, {}).keys())
-        if not video_frames: return jsonify({"neighbors": []})
-        current_index = video_frames.index(frame_n)
-        start = max(0, current_index - 5)
-        end = min(len(video_frames), current_index + 6)
-        neighbor_ns = video_frames[start:end]
-        parent_folder = p.parts[-3] 
-        neighbors = [f"Keyframes/{parent_folder}/{video_id}/{str(n).zfill(3)}.jpg" for n in neighbor_ns]
-        return jsonify({"neighbors": neighbors})
-    except Exception as e: return jsonify({"error": str(e)}), 500
+        _, video_id, frame_id_str = get_web_path(image_path)
+        if not frame_id_str or video_id == "N/A":
+            return jsonify({"neighbors": []})
+        neighbor_ids = get_neighbor_frame_ids(video_id, int(frame_id_str), 5)
+        neighbors = [get_frame_web_path(video_id, frame_id) for frame_id in neighbor_ids]
+        return jsonify({"neighbors": [path for path in neighbors if path]})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
 
 # === (CẬP NHẬT) API ĐỂ LẤY BẢN ĐỒ THỜI GIAN KEYFRAME ===
 @app.route('/get_keyframe_map', methods=['POST'])
@@ -1730,14 +1607,39 @@ def submit_answer():
         return jsonify({"status": "error", "message": str(e), "btc_response": None}), 500
 
 # --- Các hàm phục vụ file tĩnh ---
+PUBLIC_STATIC_FILES = {"style.css", "script.js", "logo_wud.jpg"}
+
+
+@app.route('/health', methods=['GET'])
+def health():
+    """Lightweight readiness check; does not force the lazy Jina model to load."""
+    jina_available, jina_reason = jina_text_encoder.availability()
+    hybrid_available = jina_available and jina_caption_index is not None
+    return jsonify({
+        "status": "ok" if hybrid_available else "degraded",
+        "device": device,
+        "records": len(image_records),
+        "jina": {"available": jina_available, "reason": jina_reason},
+        "jina_hybrid": {
+            "available": hybrid_available,
+            "reason": jina_caption_index_reason if jina_available else jina_reason,
+        },
+        "ocr": {"available": bm25_ocr_index is not None},
+        "asr_for_fusion": {"available": bm25_asr_index is not None},
+        "auto_crop": {"available": yolo_model is not None},
+    })
+
+
 @app.route('/')
-def serve_index(): return send_from_directory('.', 'index.html')
+def serve_index(): return send_from_directory(str(BASE_DIR), 'index.html')
 @app.route('/<path:path>')
-def serve_static(path): return send_from_directory('.', path)
+def serve_static(path):
+    if path not in PUBLIC_STATIC_FILES:
+        abort(404)
+    return send_from_directory(str(BASE_DIR), path)
 @app.route('/Keyframes/<path:path>')
-def serve_keyframes(path): return send_from_directory(KEYFRAMES_DIR, path)
+def serve_keyframes(path): return send_from_directory(str(KEYFRAMES_DIR), path)
 
 # --- CHẠY APP ---
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=5000, debug=False)
-

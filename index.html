@@ -65,12 +65,12 @@
                             <div id="trake-event-rows"></div>
                         </div>
 
-                        <!-- (THÊM MỚI) 3 ô riêng cho Fusion (CLIP/OCR/ASR) + tỷ lệ trọng số -->
+                        <!-- Ba nhánh độc lập cho Fusion: Jina Hybrid/OCR/ASR. -->
                         <div id="fusion-input-area" class="fusion-input-area hidden">
                             <div class="fusion-input-row">
-                                <label for="fusion-query-clip">🖼️ CLIP <span class="fusionsearch-weight-pct" id="fusionsearch-weight-clip-pct">33%</span></label>
-                                <input type="text" id="fusion-query-clip" class="fusion-query-input" placeholder="Mô tả cảnh (sẽ tự dịch sang tiếng Anh nếu bật 'Tự động dịch')...">
-                                <input type="range" id="fusionsearch-weight-clip" class="fusionsearch-weight-slider" min="0" max="100" value="50">
+                                <label for="fusion-query-jina">🖼️ Jina Hybrid <span class="fusionsearch-weight-pct" id="fusionsearch-weight-jina-pct">33%</span></label>
+                                <input type="text" id="fusion-query-jina" class="fusion-query-input" placeholder="Mô tả cảnh bằng tiếng Việt hoặc tiếng Anh...">
+                                <input type="range" id="fusionsearch-weight-jina" class="fusionsearch-weight-slider" min="0" max="100" value="50">
                             </div>
                             <div class="fusion-input-row">
                                 <label for="fusion-query-ocr">🔤 OCR <span class="fusionsearch-weight-pct" id="fusionsearch-weight-ocr-pct">33%</span></label>
@@ -84,7 +84,7 @@
                             </div>
                             <label class="fusion-sync-label">
                                 <input type="checkbox" id="fusion-sync-checkbox">
-                                Đồng bộ nội dung 3 ô (gõ 1 ô, tự điền 2 ô còn lại) — mặc định TẮT vì CLIP/OCR/ASR nên có nội dung khác nhau
+                                Đồng bộ nội dung 3 ô — mặc định tắt vì semantic/OCR/ASR thường cần cách diễn đạt khác nhau
                             </label>
                         </div>
 
@@ -98,14 +98,6 @@
                                 <input type="checkbox" id="auto-crop-checkbox">
                                 <label for="auto-crop-checkbox">🎯 Auto-Crop vật thể (YOLOv8n)</label>
                             </div>
-                            <!-- (THÊM MỚI) Thanh trượt fusion CLIP <-> BEIT3 (fine-grained) -->
-                            <div class="fusion-weight-box">
-                                <label for="beit3-weight-slider">
-                                    Fusion: CLIP <span id="fusion-weight-clip">100%</span>
-                                    ↔ BEIT3 <span id="fusion-weight-beit3">0%</span>
-                                </label>
-                                <input type="range" id="beit3-weight-slider" min="0" max="100" value="100">
-                            </div>
                         </div>
                         <div id="multi-image-upload-area" class="image-upload-area hidden">
                             <input type="file" id="multi-image-upload-input" multiple accept="image/*">
@@ -114,14 +106,16 @@
                         </div>
                         <div class="controls">
                             <div class="search-mode-box">
-                                <input type="radio" id="mode-semantic" name="search-mode" value="semantic" checked>
-                                <label for="mode-semantic">Tìm Ảnh (Semantic)</label>
+                                <input type="radio" id="mode-semantic-jina" name="search-mode" value="semantic-jina" checked>
+                                <label for="mode-semantic-jina" title="Semantic search độc lập bằng Jina Embeddings v5, vector 1024 chiều">Semantic · Jina</label>
+                                <input type="radio" id="mode-semantic-jina-hybrid" name="search-mode" value="semantic-jina-hybrid">
+                                <label for="mode-semantic-jina-hybrid" title="Gộp kết quả Jina image và Jina caption bằng Reciprocal Rank Fusion (RRF) trọng số bằng nhau">Jina · Hybrid</label>
                                 <input type="radio" id="mode-ocr" name="search-mode" value="ocr">
                                 <label for="mode-ocr">Tìm Chữ (OCR)</label>
                                 <input type="radio" id="mode-asr" name="search-mode" value="asr">
                                 <label for="mode-asr">Tìm Lời (ASR)</label>
                                 <input type="radio" id="mode-fusion" name="search-mode" value="fusion">
-                                <label for="mode-fusion" title="Gộp CLIP + OCR + ASR bằng Reciprocal Rank Fusion">Tìm Gộp (Fusion)</label>
+                                <label for="mode-fusion" title="Gộp Jina Hybrid + OCR + ASR bằng Reciprocal Rank Fusion">Tìm Gộp (Fusion)</label>
                                 <!-- (THÊM MỚI) Nút Similar Search -->
                                 <input type="radio" id="mode-similar" name="search-mode" value="similar">
                                 <label for="mode-similar">Tìm Ảnh (Tương tự)</label>
@@ -139,10 +133,6 @@
                                 <div class="window-size-box hidden" style="margin-left:10px;">
                                     <label for="window-size-input">Nới khung (± frames):</label>
                                     <input type="number" id="window-size-input" value="5" min="0" max="50">
-                                </div>
-                                <div class="translate-box">
-                                    <input type="checkbox" id="translate-checkbox" checked>
-                                    <label for="translate-checkbox">Tự động dịch (VI → EN)</label>
                                 </div>
                                 <!-- (THÊM MỚI) Checkbox Group Search -->
                                 <div class="group-box">

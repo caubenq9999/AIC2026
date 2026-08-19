@@ -1,88 +1,265 @@
-# MFusion-VR — Hệ thống truy vấn video/hình ảnh (AIC2025/2026)
+# AIC Video Retrieval — Jina-only
 
-Hệ thống event/video retrieval kiểu VBS (Video Browser Showdown): tìm keyframe trong kho video lớn bằng text (semantic), OCR, ASR, ảnh mẫu (similar search), hoặc chuỗi sự kiện (TRAKE), rồi nộp đáp án (QA/KIS/TRAKE) trực tiếp lên server chấm điểm của BTC.
+Ứng dụng Flask tìm keyframe cho AIC/VBS, dùng duy nhất
+`jinaai/jina-embeddings-v5-omni-small` cho retrieval đa phương thức. Model được
+pin tại revision `05f4151c87083f204159bfa15e53fdb0320ffef1`.
 
-## Kiến trúc
+Các chế độ trên giao diện:
 
+- **Semantic · Jina**: text → Jina image vectors.
+- **Jina · Hybrid**: gộp rank từ Jina image vectors và Jina caption vectors bằng RRF.
+- **OCR** và **ASR**: BM25 trên metadata văn bản.
+- **Fusion**: Jina Hybrid + OCR + ASR, có trọng số riêng cho từng nhánh.
+- **Tìm ảnh tương tự**: ảnh → Jina image vectors, tùy chọn YOLO Auto-Crop.
+- **TRAKE text**: Jina Hybrid retrieval rồi temporal alignment theo thứ tự sự kiện.
+- **Tìm giao ảnh**: nhiều ảnh → Jina image retrieval rồi giao trong cửa sổ frame.
+
+Jina nhận trực tiếp cả tiếng Việt và tiếng Anh. Caption corpus hiện là tiếng Anh
+nhưng nằm trong cùng không gian multilingual, vì vậy không cần dịch query trước.
+
+## 1. Cấu trúc project hoàn chỉnh
+
+Sau khi clone code và chuẩn bị artifact, project có cấu trúc đầy đủ như sau.
+Các mục `[GitHub]` được commit; các mục `[Artifact]` tải từ Drive/Hugging Face và
+được `.gitignore` chặn; các mục `[Generated]` được tạo trên máy lúc setup.
+
+```text
+AIC2026/
+├── app.py                                      # [GitHub] Flask backend/API
+├── retrieval_data.py                           # [GitHub] load metadata OCR/
+├── semantic_search.py                          # [GitHub] Jina encoder và NPY search
+├── index.html                                  # [GitHub] giao diện
+├── script.js                                   # [GitHub] logic frontend
+├── style.css                                   # [GitHub] CSS
+├── logo_wud.jpg                                # [GitHub] ảnh giao diện
+│
+├── requirements.txt                            # [GitHub] toàn bộ dependencies
+├── .gitignore                                  # [GitHub]
+├── artifacts-manifest.json                     # [GitHub] shape/hash artifact
+├── README.md                                   # [GitHub]
+│
+├── scripts/                                    # [GitHub]
+│   ├── prepare_data.py                         # tải, unzip và validate artifact
+│   └── build_filtered_ocr_metadata.py          # tái tạo OCR metadata đã lọc
+│
+├── keyframes/                                  # [Artifact]
+│   ├── L21/L21_V001/000000.webp
+│   ├── L22/...
+│   └── L30/...
+│
+├── embedding/jina/                             # [Artifact]
+│   ├── jina_embeddings_npy/
+│   │   ├── L21.npy
+│   │   ├── ...
+│   │   └── L30.npy
+│   └── caption_embeddings_npy/
+│       ├── L21.npy
+│       ├── ...
+│       └── L30.npy
+│
+├── ocr/                                        # [Artifact]
+│   ├── metadata_ocr_filtered.zip               # file tải về
+│   └── metadata_ocr_filtered/                  # folder sau khi unzip
+│       └── metadata/
+│           ├── L21_V001.json
+│           ├── ...
+│           └── L30_*.json
+│
+├── asr/metadata_asr_clean/                     # [Artifact]
+│   ├── L21_V001.json
+│   ├── ...
+│   └── L30_*.json
+│
+├── yolov8n.pt                                  # [Artifact, optional] Auto-Crop
+└── .cache/huggingface/                         # [Generated] pretrained Jina cache
 ```
-Browser (index.html/script.js/style.css)
-        │  fetch() → JSON / multipart
-        ▼
-Flask app.py (root)
-        ├─ CLIP (apple/DFN5B-CLIP-ViT-H-14-378 + LoRA "fine_tuned_model_lora_2025")
-        │     → text/ảnh → vector 1024-d → FAISS IndexFlatIP (382k keyframes)
-        ├─ BEIT3 (timm beit3_base_patch16_224.in22k_ft_in1k)
-        │     → vector 768-d, dùng fusion re-rank cho Similar Search
-        ├─ YOLOv8n (yolov8n.pt) → auto-crop vật thể trước khi encode CLIP (Similar Search)
-        ├─ BLIP-ITM reranker (test_reranker.py) → rerank top-N (đang tắt: ENABLE_RERANKER=False)
-        ├─ BM25 tự implement (class BM25 trong app.py, không cần service ngoài)
-        │     ├─ bm25_ocr_index (từ ocr.json)   → /search_ocr
-        │     └─ bm25_asr_index (từ asr_result/) → /search_asr
-        ├─ Groq (model openai/gpt-oss-120b) → dịch VI→EN, Query Expansion
-        └─ BTC_API_BASE_URL (eventretrieval.oj.io.vn) → /submit_answer forward đáp án
+
+Các nguồn dùng để **tạo lại artifact**, không cần trên máy người dùng cuối:
+
+```text
+Captions/                                       # caption CSV thô
+OCR_original_no_LLM/OCR/L21.jsonl ... L30.jsonl
+ocr/metadata_ocr/                               # metadata canonical chưa nhúng OCR
+embedding/jina/encode_captions.py                # encoder caption offline
+embedding/clip/mapping (1).json                  # mapping chỉ dùng lúc encode offline
 ```
 
-`app.py` là server **đang chạy thật** (production). Thư mục [code/](code/) chứa một bản UI/backend đơn giản hơn, cũ hơn — chỉ giữ để tham khảo, **không phải bản đang dùng**.
+Nếu muốn để data ngoài repository, giữ nguyên cây con artifact trong một folder
+khác, ví dụ `D:\AIC2026-data`, rồi cấu hình các biến đường dẫn như phần chạy local.
 
-## Các chế độ tìm kiếm (search-mode)
+## 2. Phân chia code và artifact
 
-| Mode | Endpoint | Input | Ghi chú |
-|---|---|---|---|
-| Semantic | `POST /search` | text | CLIP text→image; hỗ trợ dịch VI→EN, tìm trực tiếp theo Video ID |
-| Query Expansion | `POST /expand_query` | text | Sinh 3 biến thể câu query bằng Groq, KHÔNG tự search — trả về để người dùng chọn 1 cái rồi search bằng `/search` |
-| OCR | `POST /search_ocr` | text | BM25 tự implement (`bm25_ocr_index`), không cần service ngoài |
-| ASR | `POST /search_asr` | text | BM25 tự implement (`bm25_asr_index`) + ghép đoạn liền kề |
-| Fusion | `POST /search_fusion` | 3 ô text riêng (CLIP/OCR/ASR) + tỷ lệ trọng số | Gộp CLIP + OCR + ASR bằng Reciprocal Rank Fusion có trọng số |
-| Similar Search | `POST /search_similar_image` | 1 ảnh upload | CLIP image search, auto-crop YOLO tuỳ chọn, **fusion CLIP↔BEIT3** qua slider |
-| TRAKE | `POST /search_trake_02` | `events: ["sự kiện 1", "sự kiện 2", ...]` (mỗi sự kiện 1 ô nhập riêng, thêm/xóa được; vẫn nhận `query` ngăn bằng `;` khi gọi API trực tiếp) | **Temporal alignment**: tìm video chứa cả chuỗi sự kiện, rồi DP căn mỗi sự kiện về đúng 1 keyframe theo thứ tự thời gian tăng dần. Trả về mỗi video 1 chuỗi N frame |
-| TRAKE Image | `POST /search_trake_image` | ≥2 ảnh upload | Tương tự TRAKE.02 nhưng theo ảnh mẫu |
+Nên dùng cả hai lớp sau:
 
-Các endpoint hỗ trợ `group=true` để nhóm kết quả theo video (dạng "album", tiện cho TRAKE).
+1. **GitHub** lưu code, `requirements.txt`, manifest và tài liệu.
+2. **Hugging Face Dataset private hoặc Google Drive** lưu keyframe, vector và metadata nặng.
 
-Nộp đáp án: `POST /submit_answer` (JSON `{evaluation_id, session_id, answer_payload}`) forward tới `BTC_API_BASE_URL`.
+Không đưa dữ liệu vài chục GB vào Git history. Người dùng chỉ cần clone code,
+tải artifact đúng layout, tạo Python virtual environment và cài `requirements.txt`.
 
-## Dữ liệu
+Lưu ý khi chia sẻ/triển khai: checkpoint Jina này công bố theo giấy phép
+`CC-BY-NC-4.0`. Hãy kiểm tra lại điều khoản nếu mục đích sử dụng có yếu tố thương mại.
 
-| Thư mục/File | Nội dung |
-|---|---|
-| `keyframes/`, `Keyframes_K*/L*` | Ảnh keyframe trích từ video, đặt tên `K10_V001/001.jpg` |
-| `map-keyframes/` | CSV map `n` (số frame) ↔ `frame_idx`, `pts_time`, `fps` |
-| `media-info/` | JSON metadata mỗi video (trong đó có `watch_url` YouTube) |
-| `ocr.json`, `asr_result/` | Dữ liệu OCR/ASR thô, được tải thẳng vào bộ nhớ lúc khởi động để build `bm25_ocr_index`/`bm25_asr_index` |
-| `image_embeddings.npy` + `image_paths.json` | Vector CLIP đầy đủ — 382,299 keyframe × 1024-d (float16) |
-| `beit3_vectors/vectors_beit3/` | Vector BEIT3 theo shard (mỗi batch K*/L* một file `*_beit3_embeddings.npy` + `*_beit3_paths.json`), 768-d |
-| `vectors/` | Shard CLIP cũ, không đầy đủ (chỉ K10–K20, L25–L30) — đã bị thay thế bởi `image_embeddings.npy`, giữ lại để tham khảo |
-| `fine_tuned_model_lora_2025/` | Adapter LoRA fine-tune trên CLIP |
+## 3. Cấu trúc artifact bắt buộc
 
-> BEIT3 dùng ở đây (`timm/beit3_base_patch16_224.in22k_ft_in1k`) chỉ có vision tower (checkpoint phân loại ImageNet), **không có text tower** — nên chỉ dùng được cho so ảnh-với-ảnh (Similar Search), không dùng cho tìm kiếm bằng text.
+Chuẩn bị một data root theo đúng layout này:
 
-## Chạy hệ thống
+```text
+data-root/
+├── keyframes/
+│   ├── L21/L21_V001/000000.jpg
+│   └── ...
+├── embedding/jina/
+│   ├── jina_embeddings_npy/L21.npy ... L30.npy
+│   └── caption_embeddings_npy/L21.npy ... L30.npy
+├── ocr/
+│   ├── metadata_ocr_filtered.zip           # File vận chuyển/tải về
+│   └── metadata_ocr_filtered/              # Runtime dùng folder đã giải nén
+│       └── metadata/*.json
+├── asr/metadata_asr_clean/
+│   └── *.json
+└── yolov8n.pt                    # tùy chọn, chỉ cho Auto-Crop
+```
 
-Cần Python có đủ gói trong `requirements.txt` (bao gồm `torch`+CUDA nếu muốn chạy GPU, `ultralytics`, `peft`, `timm`...) và API key Groq (biến `GROQ_API_KEY` ở đầu [app.py](app.py) — **hiện đang hardcode tạm để test**, cần thay bằng key thật trước khi build/commit). Không còn phụ thuộc Elasticsearch — OCR/ASR chạy bằng BM25 tự implement, build thẳng từ `ocr.json`/`asr_result/` lúc khởi động (~12s).
+Hai bộ vector phải có cùng thứ tự row với metadata, dtype `float32`, 1024 chiều,
+đã L2-normalize. Tổng cộng phải có 317.961 rows. Số row từng collection nằm trong
+`artifacts-manifest.json`.
 
-```bash
+`metadata_ocr_filtered.zip` chứa cả metadata canonical và `ocr_text` lấy từ OCR
+original sau khi lọc logo/ticker L21/L22. Trước khi chạy, giải nén ZIP vào
+`ocr/metadata_ocr_filtered/`; `prepare_data.py` tự làm bước này nếu folder
+chưa có. Runtime không còn cần mang theo
+`metadata_ocr/` cũ hoặc `OCR_original_no_LLM/`. Hai nguồn đó chỉ cần giữ ở máy
+tạo artifact nếu muốn chạy lại `scripts/build_filtered_ocr_metadata.py`.
+
+Giải nén thủ công trên PowerShell:
+
+```powershell
+New-Item -ItemType Directory -Force D:\AIC2026-data\ocr\metadata_ocr_filtered
+Expand-Archive `
+  D:\AIC2026-data\ocr\metadata_ocr_filtered.zip `
+  D:\AIC2026-data\ocr\metadata_ocr_filtered `
+  -Force
+```
+
+### Tải từ Hugging Face Dataset
+
+Đặt nguyên layout trên trong một dataset repo, sau đó:
+
+```powershell
+python scripts/prepare_data.py `
+  --repo-id YOUR_USER/aic2026-retrieval-artifacts `
+  --data-dir D:\AIC2026-data
+```
+
+Repo private cần đặt `$env:HF_TOKEN`. Script tải snapshot, tự bung mọi file ZIP
+trong `archives/`, rồi kiểm tra metadata và cả hai bộ vector.
+
+### Tải từ Google Drive
+
+Nén artifact theo collection để dễ resume, ví dụ `keyframes_L21.zip`, và để mỗi
+ZIP chứa luôn đường dẫn đích như `keyframes/L21/...`. Tải các ZIP về
+`D:\AIC2026-data\archives`, rồi chạy:
+
+```powershell
+python scripts/prepare_data.py --data-dir D:\AIC2026-data
+```
+
+Muốn kiểm tra tồn tại đủ từng ảnh (chậm hơn):
+
+```powershell
+python scripts/prepare_data.py --data-dir D:\AIC2026-data --full
+```
+
+## 4. Chạy local trên Windows
+
+Yêu cầu Python 3.10/3.11 và NVIDIA GPU được khuyến nghị. Tạo môi trường:
+
+```powershell
+py -3.10 -m venv .venv
+.\.venv\Scripts\Activate.ps1
+python -m pip install --upgrade pip
 pip install -r requirements.txt
-python app.py            # chạy ở http://localhost:5000
 ```
 
-## Tính năng mới gần đây
+Nếu artifact nằm ngay trong folder project như máy gốc, không cần cấu hình path.
+Nếu artifact nằm ở `D:\AIC2026-data`, đặt biến môi trường:
 
-- **TRAKE viết lại theo Temporal Alignment** — bản cũ tìm frame mà *tất cả* các phần mô tả cùng xuất hiện trong cửa sổ hẹp ±N frame, sai bản chất TRAKE vì các sự kiện trong một chuỗi (chạy đà → giậm nhảy → bay qua xà → tiếp đất) nằm rải rác cách nhau hàng trăm frame. Bản mới chạy đúng 2 giai đoạn của BTC: (1) *Retrieval* — gộp điểm mọi sự kiện theo từng video để tìm video chứa cả chuỗi; (2) *Alignment* — quy hoạch động (`_align_event_sequence`) chọn cho mỗi sự kiện đúng 1 keyframe sao cho thứ tự thời gian tăng dần và tổng điểm CLIP lớn nhất. DP còn **phạt khoảng cách thời gian**: 2 sự kiện liên tiếp cách nhau quá ngưỡng (ô "Cách nhau tối đa", mặc định 30 giây) bị trừ `0.01 điểm/giây` vượt ngưỡng — vượt 30s là mất trọn giá trị một sự kiện khớp. Không ràng buộc này thì DP hay ghép các sự kiện cách nhau vài phút, vốn là những cảnh không liên quan trong cùng video (keyframe cách nhau ~2.8s, video dài ~16 phút). Phạt mềm chứ không chặn cứng, phòng khi đáp án thật hơi thưa.
+```powershell
+$dataRoot = "D:\AIC2026-data"
+$env:AIC_KEYFRAMES_DIR = "$dataRoot\keyframes"
+$env:AIC_OCR_METADATA_PATH = "$dataRoot\ocr\metadata_ocr_filtered"
+$env:AIC_ASR_METADATA_DIR = "$dataRoot\asr\metadata_asr_clean"
+$env:AIC_JINA_VECTORS_DIR = "$dataRoot\embedding\jina\jina_embeddings_npy"
+$env:AIC_JINA_CAPTION_VECTORS_DIR = "$dataRoot\embedding\jina\caption_embeddings_npy"
+$env:AIC_YOLO_MODEL_PATH = "$dataRoot\yolov8n.pt"
+$env:AIC_CACHE_DIR = "D:\AIC2026-cache\huggingface"
+python app.py
+```
 
-Kết quả hiện dạng "chuỗi": mỗi video một hàng N ảnh theo thứ tự sự kiện, mỗi ô ghi khoảng cách tới sự kiện liền trước (tô đỏ khi vượt ngưỡng), header ghi tổng thời lượng chuỗi, kèm nút **"⬇ Dùng chuỗi này để nộp"** đổ thẳng cả N `frame_idx` vào ô nộp TRAKE (trước đây phải click từng frame một). Phần nhập cũng đổi từ một ô text ngăn bằng `;` thành **danh sách ô riêng cho từng sự kiện**, có nút "+ Thêm sự kiện" và nút ✕ xóa từng ô (khoá khi chỉ còn 2 ô — dưới 2 thì không còn là chuỗi).
-- **Fusion Search (CLIP + OCR + ASR)** — 3 ô nhập riêng cho từng nguồn + 3 thanh trượt tỷ lệ trọng số (mặc định 1/3 mỗi nguồn), gộp bằng Reciprocal Rank Fusion có trọng số. Mỗi kết quả có `matched_by` cho biết khớp bởi nguồn nào.
-- **Fusion CLIP ↔ BEIT3 (Similar Search)** — thanh trượt trong chế độ "Tìm Ảnh (Tương tự)" điều chỉnh trọng số giữa CLIP (ngữ nghĩa) và BEIT3 (chi tiết/fine-grained) khi rerank kết quả tìm ảnh bằng ảnh mẫu.
-- **Query Expansion** — nút "🔎 Mở rộng câu truy vấn" ở chế độ Semantic Search: dùng Groq sinh 3 biến thể câu query (sát nghĩa / nhấn vai trò / nhấn nơi chốn, theo `[AIC2026] - Query expansion.docx`), hiện ra để người dùng bấm chọn 1 biến thể rồi search luôn bằng biến thể đó (không tự động gộp cả 3 nữa — tránh tình trạng operator không biết hệ thống đã tìm bằng câu gì).
-- **UI**: banner lớn được thu gọn thành thanh tiêu đề mỏng; select box loại câu hỏi (QA/KIS/TRAKE) chuyển ra thanh luôn hiển thị ở đầu trang thay vì phải bấm vào frame rồi cuộn xuống mới chọn được (theo góp ý trong `[AIC2026] - Đề xuất UI/DE_XUAT.jpg`).
+Mở `http://localhost:5000`. Model Jina được tải lazy ở truy vấn semantic/ảnh đầu
+tiên; lần đầu cần Internet và sẽ lâu hơn. `GROQ_API_KEY` chỉ cần cho nút Query
+Expansion, không cần cho retrieval.
 
-## Script phụ trợ (root)
+Kiểm tra nhanh dịch vụ:
 
-- `elasticocr.py` / `elasticasr.py` — **không còn dùng** (còn lại từ thời còn Elasticsearch, `app.py` giờ chạy BM25 tự implement, không cần chạy 2 file này nữa).
-- `demo_ocrsearch.py` — script thử nghiệm query cũ, tham chiếu tới Elasticsearch, không còn khớp với `app.py` hiện tại.
-- `test_reranker.py` — `BlipReranker` (BLIP-ITM) dùng để rerank kết quả (hiện đang tắt trong `app.py`).
-- `playvideo.py` — phát thử video cục bộ bằng VLC.
+```powershell
+Invoke-RestMethod http://localhost:5000/health
+```
 
-## Tài liệu thiết kế
+## 5. Biến môi trường
 
-- `[AIC2026] - Query expansion.docx` — ý tưởng & prompt cho Query Expansion (PLAN A).
-- `[AIC2026] - Đề xuất UI/` — ảnh chụp UI hiện tại (`UI_present.jpg`), đề xuất cải tiến (`DE_XUAT.jpg`), và ảnh tham khảo UI của các đội khác tại VBS (`ref1-3.jpg`).
+| Biến | Mặc định |
+|---|---|
+| `AIC_KEYFRAMES_DIR` | `keyframes` |
+| `AIC_OCR_METADATA_PATH` | ưu tiên folder `ocr/metadata_ocr_filtered` |
+| `AIC_OCR_TEXT_DIR` | tùy chọn; chỉ overlay khi dùng metadata legacy |
+| `AIC_ASR_METADATA_DIR` | `asr/metadata_asr_clean` |
+| `AIC_JINA_VECTORS_DIR` | `embedding/jina/jina_embeddings_npy` |
+| `AIC_JINA_CAPTION_VECTORS_DIR` | `embedding/jina/caption_embeddings_npy` |
+| `AIC_YOLO_MODEL_PATH` | `yolov8n.pt` |
+| `AIC_CACHE_DIR` | `.cache/huggingface` |
+| `GROQ_API_KEY` | rỗng; Query Expansion bị tắt |
+
+## 6. Những file nên push lên GitHub
+
+Không dùng `git add .` trong workspace hiện tại vì đang chứa artifact lớn. Chỉ add
+whitelist code sau:
+
+```powershell
+git add app.py retrieval_data.py semantic_search.py `
+  index.html script.js style.css logo_wud.jpg `
+  requirements.txt .gitignore artifacts-manifest.json `
+  scripts/prepare_data.py scripts/build_filtered_ocr_metadata.py README.md
+git add -u -- test_reranker.py
+git status --short
+```
+
+Không push các folder/file sau: `keyframes/`, `embedding/`, `ocr/`,
+`OCR_original_no_LLM/`, `asr/`, `Captions/`, `.cache/`, `.venv/`, `*.npy`,
+`*.zip` và model weights. `.gitignore` đã chặn các nhóm này.
+
+## 7. API retrieval chính
+
+| Endpoint | Nội dung |
+|---|---|
+| `GET /health` | trạng thái artifact/runtime |
+| `GET /semantic_models` | trạng thái Jina và Jina Hybrid |
+| `POST /search` | `semantic_model`: `jina` hoặc `jina-hybrid` |
+| `POST /search_ocr` | OCR BM25 |
+| `POST /search_asr` | ASR BM25 |
+| `POST /search_fusion` | `query_jina`, `query_ocr`, `query_asr` + weights |
+| `POST /search_similar_image` | một ảnh multipart |
+| `POST /search_trake_02` | mảng `events` theo thứ tự |
+| `POST /search_trake_image` | ít nhất hai ảnh multipart |
+
+## 8. Lỗi thường gặp
+
+- **Jina Hybrid bị khóa**: thiếu hoặc sai một shard caption `L21.npy…L30.npy`;
+  chạy lại `scripts/prepare_data.py` để thấy file/shape sai.
+- **Model không tải được**: kiểm tra Internet, `HF_TOKEN` nếu cache/repo private,
+  và quyền ghi `AIC_CACHE_DIR`.
+- **CUDA unavailable**: kiểm tra NVIDIA driver và chạy
+  `python -c "import torch; print(torch.cuda.is_available())"`.
+- **Auto-Crop tắt**: đặt đúng `yolov8n.pt`; các chế độ Jina vẫn chạy bình thường.
+- **Out of memory**: đóng process Python khác đang chiếm VRAM rồi chạy lại app.

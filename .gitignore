@@ -3,12 +3,14 @@
 __pycache__/
 *.pyc
 .vscode/
+.cache/
+.env
 *.log
 
 # --- Dữ liệu lớn (KHÔNG push lên GitHub, giới hạn 100MB/file) ---
 image_embeddings.npy
 image_paths.json
-index.faiss
+*.faiss
 ocr_index.index
 ocr.json
 metadata_final.csv
@@ -19,12 +21,15 @@ libvlc.dll
 
 keyframes/
 Keyframes/
+data/
+embedding/
+ocr/
+asr/
+Captions/
 objects/
 vectors/
-beit3_vectors/
-clip-features-32/
-Clip-features-32-L01-L02/
 captions_huy/
+OCR_original_no_LLM/
 asr_result/
 map-keyframes/
 map-keyframes-b2/
