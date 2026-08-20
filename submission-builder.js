@@ -96,6 +96,11 @@
         return base;
     }
 
+    function candidateThumbnailPath(query, candidate) {
+        if (query.type === 'trake') return (candidate.paths || [])[0] || '';
+        return candidate.path || '';
+    }
+
     function csvCell(value) {
         const text = String(value ?? '');
         return /[",\r\n]/.test(text) ? `"${text.replace(/"/g, '""')}"` : text;
@@ -262,12 +267,34 @@
             sourceCell.textContent = isPinned ? '📌 Thủ công' : '⚙ Auto';
             const valueCell = document.createElement('td');
             valueCell.className = 'row-value';
-            valueCell.textContent = candidateDisplay(query, candidate);
+            const resultWrap = document.createElement('div');
+            resultWrap.className = 'result-with-thumbnail';
+            const thumbnailPath = candidateThumbnailPath(query, candidate);
+            if (thumbnailPath) {
+                const thumbnail = document.createElement('img');
+                thumbnail.className = 'ranking-thumbnail';
+                thumbnail.src = new URL(thumbnailPath, `${API_BASE_URL}/`).href;
+                thumbnail.alt = `Keyframe ${candidate.videoId}`;
+                thumbnail.loading = 'lazy';
+                thumbnail.title = 'Bấm để xem video';
+                resultWrap.appendChild(thumbnail);
+            } else {
+                const placeholder = document.createElement('span');
+                placeholder.className = 'ranking-thumbnail thumbnail-missing';
+                placeholder.textContent = 'No image';
+                resultWrap.appendChild(placeholder);
+            }
+            const valueText = document.createElement('span');
+            valueText.textContent = candidateDisplay(query, candidate);
+            resultWrap.appendChild(valueText);
+            valueCell.appendChild(resultWrap);
             const actionsCell = document.createElement('td');
             actionsCell.className = 'row-actions';
             const watchButton = actionButton('▶ Xem', 'Mở video tại frame này', () => {
                 viewCandidate(query, candidate, watchButton);
             });
+            const thumbnail = resultWrap.querySelector('img.ranking-thumbnail');
+            if (thumbnail) thumbnail.addEventListener('click', () => watchButton.click());
             actionsCell.appendChild(watchButton);
             if (isPinned) {
                 actionsCell.append(

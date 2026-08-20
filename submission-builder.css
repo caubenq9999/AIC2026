@@ -143,6 +143,31 @@ tbody tr:last-child td { border-bottom: none; }
 tr.pinned-row { background: var(--pinned); }
 .source-badge { white-space: nowrap; font-size: 11px; font-weight: 800; }
 .row-value { font-family: Consolas, "Courier New", monospace; word-break: break-all; }
+.result-with-thumbnail {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    min-width: 250px;
+}
+.ranking-thumbnail {
+    width: 88px;
+    height: 50px;
+    flex: 0 0 88px;
+    object-fit: cover;
+    border: 1px solid var(--line);
+    border-radius: 6px;
+    background: #edf1f4;
+}
+img.ranking-thumbnail { cursor: pointer; transition: transform 0.12s ease, border-color 0.12s ease; }
+img.ranking-thumbnail:hover { transform: scale(1.06); border-color: var(--accent); }
+.thumbnail-missing {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    color: var(--muted);
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    font-size: 10px;
+}
 .row-actions { display: flex; gap: 4px; white-space: nowrap; }
 .row-actions button { padding: 4px 7px; }
 .empty-ranking { padding: 32px; color: var(--muted); text-align: center; }
