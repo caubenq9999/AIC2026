@@ -8,7 +8,8 @@ Các chế độ trên giao diện:
 
 - **Semantic · Jina**: text → Jina image vectors.
 - **Jina · Hybrid**: gộp rank từ Jina image vectors và Jina caption vectors bằng RRF.
-- **OCR** và **ASR**: BM25 trên metadata văn bản.
+- **OCR** và **ASR**: BM25 giảm length penalty, sau đó rerank theo độ phủ từ
+  khóa/cụm từ để văn bản hoặc transcript dài không bị lép vế vô lý.
 - **Fusion**: Jina Hybrid + OCR + ASR, có trọng số riêng cho từng nhánh.
 - **Tìm ảnh tương tự**: ảnh → Jina image vectors, tùy chọn YOLO Auto-Crop.
 - **TRAKE text**: Jina Hybrid retrieval rồi temporal alignment theo thứ tự sự kiện.
@@ -266,13 +267,18 @@ Sau khi chạy app, mở `http://localhost:5000/submission-builder` hoặc bấm
 3. Mở chi tiết một frame rồi bấm **📌 Ghim frame**; với TRAKE, ghim cả chuỗi.
 4. Trong Submission Builder, sắp các dòng thủ công ở đầu và bấm
    **Fill từ ranking gần nhất** để điền phần còn lại, tối đa 100 dòng.
-5. Dùng **▶ Xem** trên từng dòng để mở video tại timestamp gần frame đã chọn.
-6. Bấm **Tải submission.zip**. Backend kiểm tra `frame_idx`, số event TRAKE,
+5. Nếu đã biết đáp án, nhập thẳng `video_id,frame_idx` vào ô **Thêm kết quả thủ
+   công**. TRAKE nhập `video_id` rồi toàn bộ `frame_idx` theo thứ tự event.
+6. Dùng **▶ Xem** trên từng dòng để mở video tại timestamp gần frame đã chọn.
+7. Bấm **Tải submission.zip**. Backend kiểm tra `frame_idx`, số event TRAKE,
    answer QA và tạo đúng cấu trúc `submission/*.csv` không có header.
 
 Bản nháp được lưu trong `localStorage` của trình duyệt. Dùng **Xuất project
-JSON** để sao lưu hoặc chuyển sang máy khác. Luồng submit trực tiếp cũ vẫn được
-giữ nguyên và độc lập với công cụ vòng sơ tuyển này.
+JSON** để sao lưu hoặc gửi cho teammate. Máy tổng hợp dùng **Merge project JSON
+từ teammate**: app tự tải backup bản local trước, giữ thứ tự ghim local ở đầu,
+nối các lựa chọn của teammate sau và loại dòng trùng. Nếu prompt/answer hoặc số
+event xung đột, dữ liệu local được giữ và app báo số conflict. Luồng submit trực
+tiếp cũ vẫn được giữ nguyên và độc lập với công cụ vòng sơ tuyển này.
 
 ## 9. Lỗi thường gặp
 

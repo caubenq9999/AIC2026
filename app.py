@@ -124,18 +124,42 @@ class BM25:
             idf[term] = math.log((self.doc_count - freq + 0.5) / (freq + 0.5) + 1.0)
         return idf
     def get_scores(self, query):
+        # Giữ nguyên scoring BM25 cũ cho các nhánh khác (đặc biệt ASR).
         scores = np.zeros(self.doc_count)
         for term in query:
             if term not in self.idf:
                 continue
-            term_freqs = []
-            for doc in self.corpus:
-                term_freqs.append(doc.count(term))
-            term_freqs = np.array(term_freqs)
+            term_freqs = np.fromiter(
+                (doc.count(term) for doc in self.corpus),
+                dtype=np.float64,
+                count=self.doc_count,
+            )
+            numerator = term_freqs * (self.k1 + 1)
+            denominator = term_freqs + self.k1 * (
+                1 - self.b + self.b * (np.array(self.doc_len) / self.avgdl)
+            )
+            scores += self.idf[term] * (numerator / denominator)
+        return scores
+
+    def get_scores_with_match_counts(self, query):
+        """Return BM25 scores and number of distinct query terms found per doc."""
+        scores = np.zeros(self.doc_count)
+        match_counts = np.zeros(self.doc_count, dtype=np.uint16)
+        # Repeating a word in the user's query must not multiply its weight.
+        distinct_query = list(dict.fromkeys(query))
+        for term in distinct_query:
+            if term not in self.idf:
+                continue
+            term_freqs = np.fromiter(
+                (doc.count(term) for doc in self.corpus),
+                dtype=np.float64,
+                count=self.doc_count,
+            )
+            match_counts += term_freqs > 0
             numerator = term_freqs * (self.k1 + 1)
             denominator = term_freqs + self.k1 * (1 - self.b + self.b * (np.array(self.doc_len) / self.avgdl))
             scores += self.idf[term] * (numerator / denominator)
-        return scores
+        return scores, match_counts
 # --- KẾT THÚC CLASS BM25 ---
 
 # --- 4. CẤU HÌNH GROQ API ---
@@ -267,6 +291,16 @@ def clean_ocr_text(text):
     text_lower = re.sub(r'\b[a-zA-Z]\b', ' ', text_lower)
     text_lower = re.sub(r'\s+', ' ', text_lower).strip()
     return text_lower
+
+
+def tokenize_ocr_text(text):
+    """Tokenize OCR consistently and detach punctuation from Vietnamese words."""
+    return re.findall(r"[^\W_]+", clean_ocr_text(text), flags=re.UNICODE)
+
+
+def tokenize_asr_text(text):
+    """Tokenize ASR without applying OCR-specific logo/time cleanup rules."""
+    return re.findall(r"[^\W_]+", str(text or "").lower(), flags=re.UNICODE)
 # --- KẾT THÚC HÀM ---
 
 
@@ -278,10 +312,12 @@ if ocr_data:
     print("Bắt đầu làm sạch dữ liệu OCR...")
     for item in ocr_data:
         original_text = item.get('ocr_text', '')
-        cleaned_text = clean_ocr_text(original_text) 
-        tokenized_corpus_ocr.append(cleaned_text.split())
+        tokenized_corpus_ocr.append(tokenize_ocr_text(original_text))
     print("Làm sạch OCR hoàn tất. Đang huấn luyện BM25...")
-    bm25_ocr_index = BM25(tokenized_corpus_ocr, k1=1.5, b=0.75) 
+    # OCR của slide/bài giảng thường dài hơn caption/logo rất nhiều. b thấp
+    # giúp BM25 không phạt độ dài quá tay; coverage/phrase bonus ở
+    # ocr_candidates() đảm bảo khớp đủ cụm từ vẫn đứng trên khớp một từ ngắn.
+    bm25_ocr_index = BM25(tokenized_corpus_ocr, k1=1.5, b=0.20)
     print(f"Xây dựng index BM25 (OCR) (tự implement) hoàn tất cho {len(tokenized_corpus_ocr)} văn bản.")
 else:
     print("Không có dữ liệu OCR để xây dựng index BM25.")
@@ -290,8 +326,13 @@ else:
 # Index 3: BM25 cho ASR
 print("Đang xây dựng index tìm kiếm với BM25 (cho ASR)...")
 bm25_asr_index = None
-if asr_corpus_tokenized:
-    bm25_asr_index = BM25(asr_corpus_tokenized, k1=1.5, b=0.75) 
+if asr_data:
+    # Dùng cùng tokenizer/ranking policy mới của OCR nhưng không chạy các regex
+    # cleanup riêng cho logo, timestamp và website của OCR.
+    asr_corpus_tokenized = [
+        tokenize_asr_text(segment.get("text", "")) for segment in asr_data
+    ]
+    bm25_asr_index = BM25(asr_corpus_tokenized, k1=1.5, b=0.20)
     print(f"Xây dựng index BM25 (ASR) (tự implement) hoàn tất cho {len(asr_corpus_tokenized)} văn bản.")
 else:
     print("Không có dữ liệu ASR để xây dựng index BM25.")
@@ -451,12 +492,56 @@ def reciprocal_rank_fusion(ranked_id_lists, k=60, weights=None):
 # === (KẾT THÚC) QUERY EXPANSION ===
 
 # === (CẬP NHẬT) OCR/ASR: bỏ hẳn Elasticsearch, dùng thẳng BM25 tự viết (đã build sẵn lúc khởi động) ===
+def coverage_phrase_bm25_scores(bm25_index, corpus, tokenized_query, search_size):
+    """BM25 scores with length-independent term coverage and exact phrase bonus."""
+    tokenized_query = list(dict.fromkeys(tokenized_query))
+    if not tokenized_query:
+        return None
+
+    scores, match_counts = bm25_index.get_scores_with_match_counts(tokenized_query)
+    known_query_terms = [term for term in tokenized_query if term in bm25_index.idf]
+    if not known_query_terms:
+        return None
+
+    query_weight = sum(bm25_index.idf[term] for term in known_query_terms)
+    coverage = match_counts.astype(np.float64) / len(known_query_terms)
+    scores += query_weight * np.square(coverage)
+
+    # Chỉ dò vị trí phrase trong một pool rộng sau coverage để request vẫn nhanh.
+    if len(tokenized_query) > 1:
+        rerank_size = min(
+            bm25_index.doc_count,
+            max(int(search_size) * 20, 2000),
+        )
+        if rerank_size < bm25_index.doc_count:
+            rerank_indices = np.argpartition(scores, -rerank_size)[-rerank_size:]
+        else:
+            rerank_indices = np.arange(bm25_index.doc_count)
+        phrase_length = len(tokenized_query)
+        phrase_bonus = query_weight * 1.5
+        for index in rerank_indices:
+            document = corpus[int(index)]
+            if any(
+                document[start:start + phrase_length] == tokenized_query
+                for start in range(len(document) - phrase_length + 1)
+            ):
+                scores[int(index)] += phrase_bonus
+    return scores
+
+
 def ocr_candidates(query_text, search_size):
-    """Trả list[(score, original_path)] từ bm25_ocr_index (xem class BM25 đầu file)."""
+    """OCR ranking: BM25 nhẹ length penalty + query coverage + phrase bonus."""
     if not bm25_ocr_index:
         return []
-    tokenized_query = clean_ocr_text(query_text).split()
-    scores = bm25_ocr_index.get_scores(tokenized_query)
+    scores = coverage_phrase_bm25_scores(
+        bm25_ocr_index,
+        tokenized_corpus_ocr,
+        tokenize_ocr_text(query_text),
+        search_size,
+    )
+    if scores is None:
+        return []
+
     top_k_indices = np.argsort(scores)[::-1][:search_size]
     out = []
     for i in top_k_indices:
@@ -471,11 +556,17 @@ def ocr_candidates(query_text, search_size):
 
 
 def asr_candidates(query_text, search_size):
-    """Trả list[dict{video_id,text,start,end,score}] từ bm25_asr_index."""
+    """ASR ranking dùng cùng coverage/phrase policy với OCR."""
     if not bm25_asr_index:
         return []
-    tokenized_query = query_text.lower().split()
-    scores = bm25_asr_index.get_scores(tokenized_query)
+    scores = coverage_phrase_bm25_scores(
+        bm25_asr_index,
+        asr_corpus_tokenized,
+        tokenize_asr_text(query_text),
+        search_size,
+    )
+    if scores is None:
+        return []
     top_k_indices = np.argsort(scores)[::-1][:search_size]
     out = []
     for i in top_k_indices:

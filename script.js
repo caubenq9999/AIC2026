@@ -615,13 +615,6 @@ document.addEventListener('DOMContentLoaded', () => {
             if (!response.ok) throw new Error(`Lỗi server: ${response.statusText}`);
             const data = await response.json();
             if (data.error) throw new Error(data.error);
-            latestSearchResponse = data;
-
-            // Lưu ranking gần nhất cho query sơ tuyển đang chọn. Việc resolve pool
-            // chạy nền, không chặn render kết quả search.
-            captureLatestSearchPool(data).catch(error => {
-                console.warn('Không lưu được pool sơ tuyển:', error);
-            });
             const variants = data.variants || [];
             if (variants.length === 0) {
                 statusMessage.textContent = 'Không mở rộng được câu truy vấn (Groq không trả kết quả hợp lệ).';
@@ -1191,6 +1184,13 @@ document.addEventListener('DOMContentLoaded', () => {
             if (!response.ok) throw new Error(`Lỗi server: ${response.statusText}`);
             const data = await response.json();
             if (data.error) throw new Error(data.error);
+
+            latestSearchResponse = data;
+            // Lưu pool ngay sau một search thật. Đoạn này trước đây bị đặt nhầm
+            // trong /expand_query nên builder luôn thấy ranking rỗng.
+            captureLatestSearchPool(data).catch(error => {
+                console.warn('Không lưu được pool sơ tuyển:', error);
+            });
 
             // (THÊM MỚI) TRAKE temporal trả về dạng CHUỖI SỰ KIỆN (mỗi video 1 chuỗi N frame),
             // khác hẳn dạng danh sách frame rời rạc của các mode còn lại -> render riêng.
