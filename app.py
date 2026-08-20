@@ -1916,6 +1916,8 @@ def export_preliminary_submission():
 PUBLIC_STATIC_FILES = {
     "style.css",
     "script.js",
+    "share_client.css",
+    "share_client.js",
     "logo_wud.jpg",
     "submission-builder.css",
     "submission-builder.js",

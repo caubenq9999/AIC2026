@@ -6,6 +6,9 @@ __pycache__/
 .cache/
 .env
 *.log
+share_messages.db
+share_messages.db-shm
+share_messages.db-wal
 
 # --- Dữ liệu lớn (KHÔNG push lên GitHub, giới hạn 100MB/file) ---
 image_embeddings.npy

@@ -5,6 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>HỆ THỐNG TRUY XUẤT VIDEO MFusion-VR</title>
     <link rel="stylesheet" href="style.css">
+    <link rel="stylesheet" href="share_client.css?v=20260820-3">
     <!-- (THÊM MỚI) API Youtube Player -->
     <script src="https://www.youtube.com/iframe_api"></script>
 </head>
@@ -253,8 +254,65 @@
         </div> <!-- Kết thúc Bố cục Chính -->
     </div> <!-- Kết thúc Container -->
 
+    <!-- Team chat nổi: service độc lập, không can thiệp retrieval/submission. -->
+    <button id="team-chat-toggle" class="team-chat-fab" type="button"
+            aria-label="Mở team chat" aria-controls="team-chat-popup" aria-expanded="false">
+        <svg viewBox="0 0 24 24" aria-hidden="true">
+            <path d="M12 3C6.9 3 3 6.6 3 11c0 2.5 1.3 4.7 3.4 6.2L5.6 21l4-2.2c.8.2 1.6.3 2.4.3 5.1 0 9-3.5 9-8S17.1 3 12 3Z"/>
+            <path class="chat-fab-bolt" d="m7.4 13.4 3.1-3.3 2 1.5 4.1-3-3.1 3.4-2-1.5-4.1 2.9Z"/>
+        </svg>
+        <span id="chat-unread-badge" class="chat-unread-badge hidden">0</span>
+    </button>
+
+    <section id="team-chat-popup" class="team-chat-popup hidden" role="dialog"
+             aria-label="Team chat" aria-modal="false">
+        <header class="chat-popup-header">
+            <div class="chat-header-avatar">MF</div>
+            <div class="chat-header-copy">
+                <strong>MFusion Team</strong>
+                <span><i id="chat-connection-dot" class="chat-connection-dot"></i><span id="chat-connection-label">Đang kết nối…</span></span>
+            </div>
+            <button id="chat-clear-button" class="chat-icon-button" type="button"
+                    aria-label="Xóa các tin tôi đã gửi" title="Dọn tin của tôi">⌫</button>
+            <button id="chat-settings-button" class="chat-icon-button" type="button" aria-label="Cài đặt chat" title="Cài đặt">⚙</button>
+            <button id="chat-close-button" class="chat-icon-button" type="button" aria-label="Đóng chat" title="Đóng">×</button>
+        </header>
+
+        <div id="chat-settings" class="chat-settings hidden">
+            <label for="chat-display-name">Tên hiển thị</label>
+            <input id="chat-display-name" type="text" maxlength="40" placeholder="Tên thành viên">
+            <label for="chat-server-url">Địa chỉ máy host</label>
+            <div class="chat-settings-server-row">
+                <input id="chat-server-url" type="text" placeholder="http://26.x.x.x:5050">
+                <button id="chat-save-settings" type="button">Kết nối</button>
+            </div>
+        </div>
+
+        <div id="chat-message-list" class="chat-message-list" aria-live="polite">
+            <div id="chat-empty-state" class="chat-empty-state">
+                <div class="chat-empty-icon">MF</div>
+                <strong>MFusion Team Chat</strong>
+                <span>Share keyframe và timestamp để đồng đội kiểm tra ngay.</span>
+            </div>
+        </div>
+
+        <footer class="chat-composer">
+            <div id="chat-attachment-preview" class="chat-attachment-preview hidden"></div>
+            <div class="chat-composer-row">
+                <button id="chat-attach-button" class="chat-attach-button" type="button"
+                        title="Gắn keyframe đang chọn" aria-label="Gắn keyframe đang chọn">+</button>
+                <textarea id="chat-message-input" rows="1" maxlength="2000" placeholder="Aa"></textarea>
+                <button id="chat-send-button" class="chat-send-button" type="button" aria-label="Gửi tin nhắn">
+                    <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m3 20 18-8L3 4v6l12 2-12 2v6Z"/></svg>
+                </button>
+            </div>
+            <span id="chat-composer-hint" class="chat-composer-hint">Enter để gửi · Shift+Enter xuống dòng</span>
+        </footer>
+    </section>
+
     <script src="submission-store.js?v=20260820-10"></script>
     <script src="script.js?v=20260820-10"></script>
+    <script src="share_client.js?v=20260820-3"></script>
 </body>
 </html>
 
