@@ -106,7 +106,13 @@
 
     function openSharedVideo(video) {
         if (!video || !video.image_path || typeof window.showImageDetail !== "function") return;
-        window.showImageDetail(video.image_path, findGalleryImage(video.image_path));
+        window.showImageDetail(video.image_path, findGalleryImage(video.image_path), {
+            searchContext: {
+                query: video.query || "",
+                mode: video.search_mode || "",
+                mode_label: video.search_mode_label || video.search_mode || "",
+            },
+        });
         togglePanel(false);
     }
 
@@ -137,6 +143,13 @@
         if (video.frame_n !== null && video.frame_n !== undefined) details.push(`frame ${video.frame_n}`);
         meta.textContent = details.join(" · ") || "Kết quả retrieval";
         info.append(title, meta);
+        const modeLabel = video.search_mode_label || video.search_mode;
+        if (modeLabel) {
+            const mode = document.createElement("span");
+            mode.className = "chat-video-mode";
+            mode.textContent = modeLabel;
+            info.appendChild(mode);
+        }
         if (video.query) {
             const query = document.createElement("span");
             query.className = "chat-video-query";
@@ -302,13 +315,20 @@
             return Number.isFinite(parsed) ? parsed : null;
         };
 
+        const searchContext = typeof window.getCurrentFrameSearchContext === "function"
+            ? window.getCurrentFrameSearchContext()
+            : null;
+        const checkedMode = document.querySelector('input[name="search-mode"]:checked');
+
         return {
             video_id: videoId,
             frame_n: parseNumber("meta-n", true),
             frame_idx: parseNumber("meta-idx", true),
             pts_time: parseNumber("meta-pts"),
             image_path: localImagePath(byId("detail-image").getAttribute("src")),
-            query: (byId("query-input").value || "").trim(),
+            query: searchContext?.query || (byId("query-input").value || "").trim(),
+            search_mode: searchContext?.mode || checkedMode?.value || "",
+            search_mode_label: searchContext?.mode_label || checkedMode?.value || "",
         };
     }
 
@@ -319,7 +339,9 @@
         if (!attachedVideo) return;
 
         const label = document.createElement("span");
-        label.textContent = `${attachedVideo.video_id} · ${attachedVideo.pts_time !== null ? `${attachedVideo.pts_time.toFixed(2)}s` : `frame ${attachedVideo.frame_n ?? "N/A"}`}`;
+        const modeLabel = attachedVideo.search_mode_label || attachedVideo.search_mode;
+        label.textContent = `${attachedVideo.video_id} · ${attachedVideo.pts_time !== null ? `${attachedVideo.pts_time.toFixed(2)}s` : `frame ${attachedVideo.frame_n ?? "N/A"}`}${modeLabel ? ` · ${modeLabel}` : ""}`;
+        label.title = attachedVideo.query ? `Query: ${attachedVideo.query}` : "";
         const remove = document.createElement("button");
         remove.type = "button";
         remove.setAttribute("aria-label", "Bỏ video đính kèm");

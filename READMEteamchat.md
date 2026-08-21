@@ -1,6 +1,6 @@
 # MFusion Team Chat
 
-Chat nội bộ để thành viên gửi tin nhắn và chia sẻ keyframe, `video_id`, frame, timestamp và query trong lúc thi.
+Chat nội bộ để thành viên gửi tin nhắn và chia sẻ keyframe, `video_id`, frame, timestamp, query và chế độ search đã sinh ra frame trong lúc thi.
 
 ## Thay đổi so với code captain
 
@@ -14,13 +14,14 @@ Chat nội bộ để thành viên gửi tin nhắn và chia sẻ keyframe, `vid
 
 `share_messages.db` được tạo tự động khi chạy và **không push lên Git**.
 
-### 3 file có sẵn được thay đổi
+### Các file có sẵn được thay đổi
 
 - `app.py`: cho phép serve `share_client.js` và `share_client.css`.
 - `index.html`: thêm popup chat và import hai asset chat.
+- `script.js`: lưu query + chế độ search theo từng kết quả để gửi đúng nguồn gốc của frame.
 - `.gitignore`: bỏ qua database chat và các file SQLite tạm.
 
-`script.js` và `style.css` của captain không bị sửa bởi module chat.
+Database chat cũ được tự động thêm hai cột search mode khi khởi động lại `share_server.py`; tin nhắn cũ không bị xóa.
 
 ## Cách chạy và join
 

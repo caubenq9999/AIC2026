@@ -13,6 +13,7 @@ let trakeFrames = [];
 // (FIX) Biến global cho searchMode để dùng trong display functions
 let currentSearchMode = ''; // (THÊM MỚI) Global để tránh lỗi "not defined"
 let latestSearchResponse = null; // Giữ ranking đang hiển thị để gắn vào query vừa tạo/chọn.
+let currentDetailSearchContext = null; // Query + mode đã thật sự sinh ra frame đang mở.
 const API_BASE_URL = window.location.protocol === 'file:'
     ? 'http://localhost:5000'
     : window.location.origin;
@@ -42,12 +43,23 @@ const imageObserver = new IntersectionObserver((entries, observer) => {
 const LAZY_PLACEHOLDER_SRC =
     "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='16' height='9'%3E%3Crect width='16' height='9' fill='%23eef1f4'/%3E%3C/svg%3E";
 
+function normalizeSearchContext(value) {
+    if (!value || typeof value !== 'object') return null;
+    const query = String(value.query || '').trim();
+    const mode = String(value.mode || value.search_mode || '').trim();
+    const modeLabel = String(value.mode_label || value.search_mode_label || mode).trim();
+    if (!query && !mode && !modeLabel) return null;
+    return { query, mode, mode_label: modeLabel };
+}
+
 // ===== (THÊM MỚI) HÀM TẠO ẢNH VỚI LAZY LOADING =====
 function createLazyImage(item) {
     const img = document.createElement('img');
+    const searchContext = normalizeSearchContext(item.search_context);
 
     img.dataset.src = item.path;
     img.dataset.videoId = item.videoId;
+    img._searchContext = searchContext;
     img.className = 'gallery-item lazy';
     img.loading = 'lazy'; // gợi ý thêm cho trình duyệt, bổ trợ cho IntersectionObserver
     img.src = LAZY_PLACEHOLDER_SRC;
@@ -61,7 +73,9 @@ function createLazyImage(item) {
         img.title = `Time: ${item.pts_time.toFixed(2)}s\nScore: ${item.score.toFixed(4)}`;
     }
 
-    img.addEventListener('click', () => { window.showImageDetail(item.path, img); });
+    img.addEventListener('click', () => {
+        window.showImageDetail(item.path, img, { searchContext });
+    });
 
     imageObserver.observe(img);
 
@@ -1040,6 +1054,67 @@ document.addEventListener('DOMContentLoaded', () => {
             asrContainer.classList.add('hidden');
         }
     }
+    const searchModeLabels = {
+        'semantic-jina': 'Semantic · Jina',
+        'semantic-jina-hybrid': 'Jina · Hybrid',
+        ocr: 'OCR',
+        asr: 'ASR',
+        fusion: 'Fusion',
+        similar: 'Ảnh tương tự',
+        'trake-02': 'TRAKE text',
+        'trake-image': 'Giao ảnh'
+    };
+
+    function buildSearchContext(searchMode, defaultQuery) {
+        let queryText = defaultQuery;
+        if (searchMode === 'fusion') {
+            queryText = [
+                ['Jina', fusionQueryJina.value.trim()],
+                ['OCR', fusionQueryOcr.value.trim()],
+                ['ASR', fusionQueryAsr.value.trim()]
+            ].filter(([, value]) => value).map(([label, value]) => `${label}: ${value}`).join(' · ');
+        } else if (searchMode === 'trake-02') {
+            queryText = getTrakeEventQueries().join(' → ');
+        } else if (searchMode === 'similar') {
+            queryText = imageUploadInput.files[0]
+                ? `Ảnh: ${imageUploadInput.files[0].name}`
+                : '';
+        } else if (searchMode === 'trake-image') {
+            queryText = Array.from(multiImageUploadInput.files)
+                .map(file => file.name)
+                .join(' + ');
+            if (queryText) queryText = `Ảnh: ${queryText}`;
+        }
+        return {
+            query: String(queryText || '').trim(),
+            mode: searchMode,
+            mode_label: searchModeLabels[searchMode] || searchMode
+        };
+    }
+
+    function attachSearchContext(results, context) {
+        if (!results || !context) return;
+        if (Array.isArray(results)) {
+            results.forEach(item => attachSearchContext(item, context));
+            return;
+        }
+        if (typeof results !== 'object') return;
+
+        // Gắn một bản sao vào result; provenance không bị đổi khi người dùng
+        // sửa ô query hoặc chuyển mode sau khi search.
+        if ('path' in results || 'web_path' in results || 'videoId' in results || 'video_id' in results) {
+            results.search_context = { ...context };
+        }
+        if (Array.isArray(results.events)) attachSearchContext(results.events, context);
+
+        // Kết quả grouped có dạng { video_id: [items...] }.
+        if (!('path' in results) && !('web_path' in results)) {
+            Object.values(results).forEach(value => {
+                if (Array.isArray(value)) attachSearchContext(value, context);
+            });
+        }
+    }
+
     // (CẬP NHẬT) Hàm performSearch
     async function performSearch() {
         // (SỬA LỖI) Chặn double-submit: bấm nhanh 2 lần trước đây tạo 2 request chồng nhau,
@@ -1194,6 +1269,8 @@ document.addEventListener('DOMContentLoaded', () => {
                 body: JSON.stringify(payload)
             };
         }
+        const searchContext = buildSearchContext(searchMode, query);
+
         // (CẬP NHẬT) Fetch call dùng chung
         try {
             const response = await fetch(API_BASE_URL + endpoint, fetchOptions);
@@ -1202,6 +1279,7 @@ document.addEventListener('DOMContentLoaded', () => {
             if (data.error) throw new Error(data.error);
 
             latestSearchResponse = data;
+            attachSearchContext(data.results, searchContext);
             // Lưu pool ngay sau một search thật. Đoạn này trước đây bị đặt nhầm
             // trong /expand_query nên builder luôn thấy ranking rỗng.
             captureLatestSearchPool(data).catch(error => {
@@ -1620,7 +1698,7 @@ document.addEventListener('DOMContentLoaded', () => {
                             break;
                         }
                     }
-                    showImageDetail(item.web_path, galleryImg);
+                    showImageDetail(item.web_path, galleryImg, { searchContext: item.search_context });
                 });
                 itemDiv.appendChild(img);
             }
@@ -1640,7 +1718,7 @@ document.addEventListener('DOMContentLoaded', () => {
             if (item.watch_url) {
                 // === [SỬA LỖI VẤN ĐỀ 1] ===
                 contentDiv.addEventListener('click', () => {
-                    showImageDetail(item.web_path || '', item)
+                    showImageDetail(item.web_path || '', item, { searchContext: item.search_context })
                 });
                 // === KẾT THÚC SỬA LỖI ===
             } else {
@@ -1687,7 +1765,7 @@ document.addEventListener('DOMContentLoaded', () => {
                     img.className = 'asr-keyframe-img';
                     img.title = `Time: ${item.start.toFixed(2)}s\nFrame: ${item.frame_n}`;
                     img.addEventListener('click', () => {
-                        showImageDetail(item.web_path, null);
+                        showImageDetail(item.web_path, null, { searchContext: item.search_context });
                     });
                     itemDiv.appendChild(img);
                 }
@@ -1708,7 +1786,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 if (item.watch_url) {
                     // === [SỬA LỖI VẤN ĐỀ 1] ===
                     contentDiv.addEventListener('click', () => {
-                        showImageDetail(item.web_path || '', item)
+                        showImageDetail(item.web_path || '', item, { searchContext: item.search_context })
                     });
                     // === KẾT THÚC SỬA LỖI ===
                 } else {
@@ -1926,9 +2004,16 @@ document.addEventListener('DOMContentLoaded', () => {
             return;
         }
         document.querySelectorAll(".gallery-item.selected").forEach(el => el.classList.remove("selected"));
-        if (imgElement) imgElement.classList.add("selected");
+        if (imgElement && imgElement.classList) imgElement.classList.add("selected");
         const preserveNeighborStrip = Boolean(options.preserveNeighborStrip)
             && keyframeVideoKey(imagePath) === keyframeVideoKey(currentDetailPath);
+        const incomingSearchContext = normalizeSearchContext(options.searchContext)
+            || normalizeSearchContext(imgElement && (imgElement._searchContext || imgElement.search_context));
+        if (incomingSearchContext) {
+            currentDetailSearchContext = incomingSearchContext;
+        } else if (!preserveNeighborStrip) {
+            currentDetailSearchContext = null;
+        }
         currentDetailPath = imagePath;
 
         // Hiển thị panel chi tiết
@@ -1995,6 +2080,9 @@ document.addEventListener('DOMContentLoaded', () => {
         }
     }
     window.showImageDetail = showImageDetail;
+    window.getCurrentFrameSearchContext = () => (
+        currentDetailSearchContext ? { ...currentDetailSearchContext } : null
+    );
 
     // renderNeighborFrames
     function renderNeighborFrames(neighborPaths, currentImagePath) {

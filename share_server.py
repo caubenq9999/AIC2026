@@ -42,10 +42,20 @@ def initialize_database() -> None:
                 pts_time REAL,
                 image_path TEXT,
                 query TEXT,
+                search_mode TEXT,
+                search_mode_label TEXT,
                 created_at TEXT NOT NULL
             )
             """
         )
+        # Giữ database từ bản chat cũ, chỉ bổ sung cột còn thiếu.
+        existing_columns = {
+            row["name"] for row in connection.execute("PRAGMA table_info(messages)")
+        }
+        if "search_mode" not in existing_columns:
+            connection.execute("ALTER TABLE messages ADD COLUMN search_mode TEXT")
+        if "search_mode_label" not in existing_columns:
+            connection.execute("ALTER TABLE messages ADD COLUMN search_mode_label TEXT")
 
 
 def clean_text(value, max_length: int) -> str:
@@ -74,6 +84,8 @@ def serialize_message(row: sqlite3.Row) -> dict:
             "pts_time": row["pts_time"],
             "image_path": row["image_path"],
             "query": row["query"],
+            "search_mode": row["search_mode"],
+            "search_mode_label": row["search_mode_label"],
         }
     return {
         "id": row["id"],
@@ -140,8 +152,8 @@ def post_message():
             """
             INSERT INTO messages (
                 sender, text, video_id, frame_n, frame_idx,
-                pts_time, image_path, query, created_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                pts_time, image_path, query, search_mode, search_mode_label, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 sender,
@@ -152,6 +164,8 @@ def post_message():
                 values["pts_time"],
                 clean_text(video.get("image_path"), 500) or None,
                 clean_text(video.get("query"), 1000) or None,
+                clean_text(video.get("search_mode"), 80) or None,
+                clean_text(video.get("search_mode_label"), 100) or None,
                 created_at,
             ),
         )
