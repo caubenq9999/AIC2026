@@ -15,6 +15,9 @@ Các chế độ trên giao diện:
 - **TRAKE text**: Jina Hybrid retrieval rồi temporal alignment theo thứ tự sự kiện.
 - **Tìm giao ảnh**: nhiều ảnh → Jina image retrieval rồi giao trong cửa sổ frame.
 
+Trong thẻ chi tiết ảnh, dải frame lân cận tải theo cửa sổ ±15 frame. Có thể lăn
+chuột, kéo ngang, giữ nút `‹`/`›`, hoặc dùng `←`/`→` và `A`/`D` để duyệt nhanh.
+
 Jina nhận trực tiếp cả tiếng Việt và tiếng Anh. Caption corpus hiện là tiếng Anh
 nhưng nằm trong cùng không gian multilingual, vì vậy không cần dịch query trước.
 
@@ -269,7 +272,8 @@ Sau khi chạy app, mở `http://localhost:5000/submission-builder` hoặc bấm
    **Fill từ ranking gần nhất** để điền phần còn lại, tối đa 100 dòng.
 5. Nếu đã biết đáp án, nhập thẳng `video_id,frame_idx` vào ô **Thêm kết quả thủ
    công**. TRAKE nhập `video_id` rồi toàn bộ `frame_idx` theo thứ tự event.
-6. Dùng **▶ Xem** trên từng dòng để mở video tại timestamp gần frame đã chọn.
+6. Bấm thumbnail để mở thẻ metadata/video ngay trong Builder; dùng **▶ Xem**
+   nếu muốn mở video tại timestamp gần frame đã chọn trong tab riêng.
 7. Bấm **Tải submission.zip**. Backend kiểm tra `frame_idx`, số event TRAKE,
    answer QA và tạo đúng cấu trúc `submission/*.csv` không có header.
 

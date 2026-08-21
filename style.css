@@ -902,18 +902,54 @@ header.slim-header {
 }
 .close-button:hover { background: var(--danger); color: #fff; }
 
-.neighbor-controls { position: relative; padding: 6px 0; }
+.neighbor-controls {
+    display: grid;
+    grid-template-columns: 38px minmax(0, 1fr) 38px;
+    align-items: stretch;
+    gap: 7px;
+    padding: 6px 0;
+}
+.neighbor-step-button {
+    min-height: 72px;
+    padding: 0;
+    border: 1px solid var(--border-light);
+    border-radius: 8px;
+    color: var(--text-primary);
+    background: var(--bg-sunken);
+    font-size: 28px;
+    font-weight: 700;
+    cursor: pointer;
+    touch-action: none;
+}
+.neighbor-step-button:hover:not(:disabled) { color: #fff; border-color: var(--accent); background: var(--accent); }
+.neighbor-step-button:disabled { opacity: 0.32; cursor: default; }
 #neighbor-thumbnails {
-    display: flex; gap: 6px; overflow-x: auto; padding: 8px;
+    display: flex; gap: 7px; overflow-x: auto; padding: 8px;
     background: var(--bg-sunken); border-radius: 8px; border: 1px solid var(--border-light);
-    scroll-behavior: smooth;
+    scroll-behavior: auto;
+    scroll-snap-type: x proximity;
+    cursor: grab;
+    user-select: none;
+    touch-action: pan-y;
+    overscroll-behavior-x: contain;
+    scrollbar-width: thin;
 }
+#neighbor-thumbnails.dragging { cursor: grabbing; scroll-snap-type: none; }
 #neighbor-thumbnails img {
-    height: 56px; border-radius: 4px; cursor: pointer; flex-shrink: 0;
-    border: 2px solid transparent; transition: border-color 0.15s ease, transform 0.15s ease;
+    width: 104px; height: 59px; object-fit: cover; border-radius: 5px; cursor: pointer; flex-shrink: 0;
+    border: 2px solid transparent; transition: border-color 0.12s ease, opacity 0.12s ease;
+    scroll-snap-align: center;
 }
-#neighbor-thumbnails img:hover { transform: scale(1.06); }
-#neighbor-thumbnails img.selected { border-color: var(--accent); }
+#neighbor-thumbnails img:hover { border-color: #8fcfe8; }
+#neighbor-thumbnails img.selected { border-color: var(--accent); box-shadow: 0 0 0 2px rgba(14, 165, 233, 0.18); }
+.neighbor-status-row {
+    display: flex;
+    justify-content: space-between;
+    gap: 10px;
+    color: var(--text-muted);
+    font-size: 11px;
+}
+#neighbor-position { color: var(--accent); font-family: "Courier New", monospace; font-weight: 700; }
 
 /* ===== UTILITY ===== */
 /* !important để tránh việc 1 rule khác set display: flex/grid... vô tình đè lên (đã từng xảy ra ở bản cũ) */

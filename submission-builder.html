@@ -4,7 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>AIC26 · Submission Builder</title>
-    <link rel="stylesheet" href="submission-builder.css?v=20260820-6">
+    <link rel="stylesheet" href="submission-builder.css?v=20260821-1">
 </head>
 <body>
     <header class="builder-header">
@@ -42,8 +42,9 @@
             <section class="panel backup-panel">
                 <h2>Dự phòng</h2>
                 <button type="button" id="export-project">Xuất project JSON</button>
-                <label class="file-button" for="import-project">Import project JSON</label>
+                <label class="file-button" for="import-project">Merge project JSON từ teammate</label>
                 <input id="import-project" type="file" accept="application/json,.json" hidden>
+                <p class="backup-note">App tự tải backup bản hiện tại trước khi merge. Dữ liệu local luôn được ưu tiên.</p>
             </section>
         </aside>
 
@@ -74,6 +75,16 @@
                 <div id="trake-event-row" class="answer-row hidden">
                     <label for="active-event-count">Số events / số frame mỗi dòng TRAKE</label>
                     <input id="active-event-count" type="number" min="2" max="30">
+                </div>
+
+                <div class="manual-entry">
+                    <label for="manual-candidate">Thêm kết quả thủ công</label>
+                    <div class="manual-entry-controls">
+                        <input id="manual-candidate" type="text" autocomplete="off"
+                               placeholder="L22_V013,18816">
+                        <button type="button" id="add-manual-candidate">📌 Thêm</button>
+                    </div>
+                    <small id="manual-format-hint">KIS/QA: video_id,frame_idx</small>
                 </div>
 
                 <div class="toolbar">
@@ -115,7 +126,50 @@
         </section>
     </main>
 
-    <script src="submission-store.js?v=20260820-6"></script>
-    <script src="submission-builder.js?v=20260820-6"></script>
+    <div id="frame-detail-modal" class="frame-detail-modal hidden" role="dialog"
+         aria-modal="true" aria-labelledby="frame-detail-title">
+        <article class="frame-detail-card">
+            <header class="frame-detail-header">
+                <div>
+                    <span id="frame-detail-query" class="query-type-badge"></span>
+                    <h2 id="frame-detail-title">Thông tin frame</h2>
+                </div>
+                <button type="button" id="close-frame-detail" class="frame-detail-close"
+                        aria-label="Đóng">×</button>
+            </header>
+
+            <div id="frame-detail-events" class="frame-detail-events hidden"></div>
+            <div id="frame-detail-loading" class="frame-detail-loading">Đang tải metadata...</div>
+
+            <div id="frame-detail-content" class="hidden">
+                <div class="frame-detail-video">
+                    <iframe id="frame-detail-player" title="Video tại frame đã chọn"
+                            allow="autoplay; encrypted-media; picture-in-picture"
+                            allowfullscreen></iframe>
+                    <div id="frame-detail-video-missing" class="frame-detail-video-missing hidden">
+                        Video này không có YouTube URL.
+                    </div>
+                </div>
+
+                <div class="frame-detail-info">
+                    <img id="frame-detail-image" alt="Keyframe đang xem">
+                    <dl>
+                        <div><dt>Video</dt><dd id="frame-detail-video-id"></dd></div>
+                        <div><dt>Frame (n)</dt><dd id="frame-detail-frame-n"></dd></div>
+                        <div><dt>Frame index</dt><dd id="frame-detail-frame-idx"></dd></div>
+                        <div><dt>Thời gian</dt><dd id="frame-detail-time"></dd></div>
+                    </dl>
+                </div>
+
+                <div class="frame-detail-actions">
+                    <a id="frame-detail-open-video" class="secondary-link" target="_blank"
+                       rel="noopener">↗ Mở video trong tab mới</a>
+                </div>
+            </div>
+        </article>
+    </div>
+
+    <script src="submission-store.js?v=20260821-1"></script>
+    <script src="submission-builder.js?v=20260821-1"></script>
 </body>
 </html>

@@ -129,6 +129,10 @@ document.addEventListener('DOMContentLoaded', () => {
     const detailBox = document.getElementById('image-detail');
     const closeDetailButton = document.getElementById('close-detail');
     const noVideoLinkSpan = document.getElementById('no-video-link');
+    const neighborThumbnails = document.getElementById('neighbor-thumbnails');
+    const neighborPreviousButton = document.getElementById('neighbor-previous');
+    const neighborNextButton = document.getElementById('neighbor-next');
+    const neighborPosition = document.getElementById('neighbor-position');
     // DOM cho Video Player
     const videoPlayerArea = document.getElementById('video-player-area');
     const videoPlayerTitle = document.getElementById('video-player-title');
@@ -179,6 +183,10 @@ document.addEventListener('DOMContentLoaded', () => {
     // === KẾT THÚC DOM MỚI ===
     let currentNeighborPaths = [];
     let currentDetailPath = "";
+    const neighborLoadsInFlight = new Set();
+    let neighborDragged = false;
+    let neighborHoldTimeout = null;
+    let neighborHoldInterval = null;
 
     function getActivePrelimQuery(state = PrelimSubmission.load()) {
         return state.queries[state.activeQueryId] || null;
@@ -677,8 +685,16 @@ document.addEventListener('DOMContentLoaded', () => {
         }
         // [SỬA LỖI !important] Check bằng .hidden
         if (detailBox.classList.contains("hidden")) return;
-        if (event.key === 'ArrowLeft') navigateNeighbor(-1);
-        if (event.key === 'ArrowRight') navigateNeighbor(1);
+        const tagName = event.target?.tagName?.toLowerCase();
+        if (['input', 'textarea', 'select'].includes(tagName) || event.target?.isContentEditable) return;
+        if (event.key === 'ArrowLeft' || event.key.toLowerCase() === 'a') {
+            event.preventDefault();
+            navigateNeighbor(-1);
+        }
+        if (event.key === 'ArrowRight' || event.key.toLowerCase() === 'd') {
+            event.preventDefault();
+            navigateNeighbor(1);
+        }
     });
     // === (THÊM MỚI) CÁC SỰ KIỆN CHO SUBMISSION PANEL ===
 
@@ -1797,8 +1813,104 @@ document.addEventListener('DOMContentLoaded', () => {
             });
         }
     }
+    function canonicalKeyframePath(path) {
+        try {
+            return new URL(path, window.location.origin).pathname
+                .replace(/^\/+/, '')
+                .toLowerCase();
+        } catch (_) {
+            return String(path || '').replace(/^\/+/, '').toLowerCase();
+        }
+    }
+
+    function keyframeVideoKey(path) {
+        const parts = canonicalKeyframePath(path).split('/');
+        return parts.length >= 2 ? parts[parts.length - 2] : '';
+    }
+
+    function keyframeNumber(path) {
+        const match = canonicalKeyframePath(path).match(/(\d+)\.[^.]+$/);
+        return match ? Number(match[1]) : Number.MAX_SAFE_INTEGER;
+    }
+
+    function findNeighborIndex(path) {
+        const key = canonicalKeyframePath(path);
+        return currentNeighborPaths.findIndex(item => canonicalKeyframePath(item) === key);
+    }
+
+    function updateNeighborSelection(currentImagePath, centerSelected = true) {
+        const currentKey = canonicalKeyframePath(currentImagePath);
+        let selectedIndex = -1;
+        neighborThumbnails.querySelectorAll('img').forEach((thumb, index) => {
+            const selected = canonicalKeyframePath(thumb.dataset.path) === currentKey;
+            thumb.classList.toggle('selected', selected);
+            if (selected) selectedIndex = index;
+        });
+
+        const frameLabel = keyframeNumber(currentImagePath);
+        neighborPosition.textContent = selectedIndex >= 0
+            ? `${selectedIndex + 1}/${currentNeighborPaths.length} · frame ${frameLabel}`
+            : `0/${currentNeighborPaths.length}`;
+        neighborPreviousButton.disabled = selectedIndex <= 0;
+        neighborNextButton.disabled = selectedIndex < 0 || selectedIndex >= currentNeighborPaths.length - 1;
+
+        if (centerSelected && selectedIndex >= 0) {
+            const selectedThumb = neighborThumbnails.querySelector('img.selected');
+            if (selectedThumb) {
+                const targetLeft = selectedThumb.offsetLeft
+                    - (neighborThumbnails.clientWidth - selectedThumb.offsetWidth) / 2;
+                neighborThumbnails.scrollTo({ left: Math.max(0, targetLeft), behavior: 'auto' });
+            }
+        }
+        return selectedIndex;
+    }
+
+    function mergeNeighborPaths(paths) {
+        const unique = new Map();
+        [...currentNeighborPaths, ...(paths || [])].forEach(path => {
+            if (path) unique.set(canonicalKeyframePath(path), path);
+        });
+        return Array.from(unique.values()).sort((left, right) => keyframeNumber(left) - keyframeNumber(right));
+    }
+
+    async function loadNeighborWindow(centerPath, replace = false) {
+        const requestKey = `${canonicalKeyframePath(centerPath)}|${replace ? 'replace' : 'extend'}`;
+        if (neighborLoadsInFlight.has(requestKey)) return;
+        neighborLoadsInFlight.add(requestKey);
+        try {
+            const response = await fetch(`${API_BASE_URL}/neighbor_frames`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ image_path: centerPath, radius: 15 }),
+            });
+            const data = await response.json();
+            if (!response.ok || data.error) throw new Error(data.error || 'Không tải được frame lân cận.');
+            // Bỏ response cũ nếu người dùng đã chuyển sang video khác.
+            if (keyframeVideoKey(centerPath) !== keyframeVideoKey(currentDetailPath)) return;
+            const nextPaths = replace ? (data.neighbors || []) : mergeNeighborPaths(data.neighbors || []);
+            const changed = nextPaths.length !== currentNeighborPaths.length
+                || nextPaths.some((path, index) => canonicalKeyframePath(path) !== canonicalKeyframePath(currentNeighborPaths[index]));
+            currentNeighborPaths = nextPaths;
+            if (changed || replace) renderNeighborFrames(currentNeighborPaths, currentDetailPath);
+            else updateNeighborSelection(currentDetailPath, false);
+        } catch (error) {
+            console.error('Lỗi lấy frame lân cận:', error);
+            if (!currentNeighborPaths.length) neighborThumbnails.textContent = 'Không tải được frame lân cận.';
+        } finally {
+            neighborLoadsInFlight.delete(requestKey);
+        }
+    }
+
+    function maybeLoadMoreNeighbors() {
+        const index = findNeighborIndex(currentDetailPath);
+        if (index < 0 || currentNeighborPaths.length < 2) return;
+        if (index <= 3 || index >= currentNeighborPaths.length - 4) {
+            loadNeighborWindow(currentDetailPath, false);
+        }
+    }
+
     // (CẬP NHẬT) Hàm showImageDetail
-    async function showImageDetail(imagePath, imgElement) {
+    async function showImageDetail(imagePath, imgElement, options = {}) {
         // (SỬA LỖI) Thêm check nếu imagePath rỗng (từ ASR)
         if (!imagePath) {
             console.warn("showImageDetail được gọi với imagePath rỗng, có thể từ ASR không có keyframe.");
@@ -1815,6 +1927,8 @@ document.addEventListener('DOMContentLoaded', () => {
         }
         document.querySelectorAll(".gallery-item.selected").forEach(el => el.classList.remove("selected"));
         if (imgElement) imgElement.classList.add("selected");
+        const preserveNeighborStrip = Boolean(options.preserveNeighborStrip)
+            && keyframeVideoKey(imagePath) === keyframeVideoKey(currentDetailPath);
         currentDetailPath = imagePath;
 
         // Hiển thị panel chi tiết
@@ -1832,11 +1946,29 @@ document.addEventListener('DOMContentLoaded', () => {
         document.getElementById('meta-pts').textContent = "Đang tải...";
         document.getElementById('meta-idx').textContent = "Đang tải...";
         noVideoLinkSpan.style.display = 'inline';
-        document.getElementById("neighbor-thumbnails").innerHTML = "Đang tải...";
+        if (preserveNeighborStrip) {
+            updateNeighborSelection(imagePath);
+            maybeLoadMoreNeighbors();
+        } else {
+            currentNeighborPaths = [];
+            neighborThumbnails.textContent = 'Đang tải...';
+            neighborPosition.textContent = '0/0';
+            neighborPreviousButton.disabled = true;
+            neighborNextButton.disabled = true;
+            loadNeighborWindow(imagePath, true);
+        }
+
+        // Khi giữ nút tua, chỉ đổi preview ngay; metadata/video chỉ cập nhật sau
+        // khi người dùng đã dừng ở một frame khoảng 140 ms.
+        if (preserveNeighborStrip) {
+            await new Promise(resolve => setTimeout(resolve, 140));
+            if (canonicalKeyframePath(currentDetailPath) !== canonicalKeyframePath(imagePath)) return;
+        }
         // Gọi API lấy metadata
         try {
             const metaRes = await fetch(`${API_BASE_URL}/metadata`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ image_path: imagePath }), });
             const meta = await metaRes.json();
+            if (canonicalKeyframePath(currentDetailPath) !== canonicalKeyframePath(imagePath)) return;
             document.getElementById('meta-pts').textContent = meta.pts_time ? parseFloat(meta.pts_time).toFixed(2) : "N/A";
             document.getElementById('meta-idx').textContent =
                 meta.frame_idx !== null && meta.frame_idx !== undefined ? meta.frame_idx : "N/A";
@@ -1856,40 +1988,32 @@ document.addEventListener('DOMContentLoaded', () => {
                 closeVideoPlayerButton.click();
             }
         } catch (e) {
+            if (canonicalKeyframePath(currentDetailPath) !== canonicalKeyframePath(imagePath)) return;
             console.error("Lỗi lấy metadata:", e);
             noVideoLinkSpan.style.display = 'inline';
             closeVideoPlayerButton.click(); // Tắt player nếu có lỗi
         }
-        // Tải frame lân cận
-        try {
-            const neighborRes = await fetch(`${API_BASE_URL}/neighbor_frames`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ image_path: imagePath }), });
-            const data = await neighborRes.json();
-            currentNeighborPaths = data.neighbors || [];
-            renderNeighborFrames(currentNeighborPaths, imagePath);
-        } catch (e) { console.error("Lỗi lấy frame lân cận:", e); }
     }
     window.showImageDetail = showImageDetail;
 
     // renderNeighborFrames
     function renderNeighborFrames(neighborPaths, currentImagePath) {
-        const container = document.getElementById("neighbor-thumbnails");
-        container.innerHTML = "";
+        neighborThumbnails.innerHTML = "";
         neighborPaths.forEach(src => {
             const thumb = document.createElement("img");
             thumb.src = src;
-            // (SỬA LỖI LOGIC) So sánh đường dẫn đầy đủ hơn
-            if (currentImagePath === src) {
-                thumb.classList.add("selected");
-            }
+            thumb.dataset.path = src;
+            thumb.loading = 'lazy';
+            thumb.draggable = false;
+            thumb.title = `Frame ${keyframeNumber(src)}`;
             thumb.addEventListener("click", () => navigateToNeighbor(src));
-            container.appendChild(thumb);
+            neighborThumbnails.appendChild(thumb);
         });
-        const selectedThumb = container.querySelector('img.selected');
-        if (selectedThumb) { selectedThumb.scrollIntoView({ behavior: 'smooth', inline: 'center', block: 'nearest' }); }
+        updateNeighborSelection(currentImagePath);
     }
     // navigateToNeighbor
     function navigateToNeighbor(newImagePath) {
-        if (newImagePath === currentDetailPath) return;
+        if (canonicalKeyframePath(newImagePath) === canonicalKeyframePath(currentDetailPath)) return;
         let correspondingElement = null;
         const galleryImages = document.querySelectorAll('.gallery-item');
         // (SỬA LỖI LOGIC) So sánh đường dẫn đầy đủ
@@ -1900,16 +2024,81 @@ document.addEventListener('DOMContentLoaded', () => {
                 break;
             }
         }
-        showImageDetail(newImagePath, correspondingElement); // Gọi lại showImageDetail
+        showImageDetail(newImagePath, correspondingElement, { preserveNeighborStrip: true });
     }
     // navigateNeighbor (phím tắt)
     function navigateNeighbor(direction) {
         if (!currentDetailPath || currentNeighborPaths.length === 0) return;
-        let currentIndex = currentNeighborPaths.indexOf(currentDetailPath);
+        let currentIndex = findNeighborIndex(currentDetailPath);
         if (currentIndex === -1) return;
         const newIndex = currentIndex + direction;
         if (newIndex >= 0 && newIndex < currentNeighborPaths.length) {
             navigateToNeighbor(currentNeighborPaths[newIndex]);
         }
     }
+
+    function stopNeighborHold() {
+        clearTimeout(neighborHoldTimeout);
+        clearInterval(neighborHoldInterval);
+        neighborHoldTimeout = null;
+        neighborHoldInterval = null;
+    }
+
+    function bindNeighborStepButton(button, direction) {
+        button.addEventListener('click', () => navigateNeighbor(direction));
+        button.addEventListener('pointerdown', event => {
+            if (event.button !== 0 || button.disabled) return;
+            stopNeighborHold();
+            neighborHoldTimeout = setTimeout(() => {
+                navigateNeighbor(direction);
+                neighborHoldInterval = setInterval(() => navigateNeighbor(direction), 120);
+            }, 320);
+        });
+        ['pointerup', 'pointercancel', 'pointerleave'].forEach(eventName => {
+            button.addEventListener(eventName, stopNeighborHold);
+        });
+    }
+
+    bindNeighborStepButton(neighborPreviousButton, -1);
+    bindNeighborStepButton(neighborNextButton, 1);
+
+    neighborThumbnails.addEventListener('wheel', event => {
+        if (Math.abs(event.deltaY) > Math.abs(event.deltaX)) {
+            event.preventDefault();
+            neighborThumbnails.scrollLeft += event.deltaY;
+        }
+    }, { passive: false });
+
+    let neighborDragStartX = 0;
+    let neighborDragStartScroll = 0;
+    neighborThumbnails.addEventListener('pointerdown', event => {
+        if (event.button !== 0) return;
+        neighborDragged = false;
+        neighborDragStartX = event.clientX;
+        neighborDragStartScroll = neighborThumbnails.scrollLeft;
+        neighborThumbnails.classList.add('dragging');
+        neighborThumbnails.setPointerCapture(event.pointerId);
+    });
+    neighborThumbnails.addEventListener('pointermove', event => {
+        if (!neighborThumbnails.hasPointerCapture(event.pointerId)) return;
+        const delta = event.clientX - neighborDragStartX;
+        if (Math.abs(delta) > 4) neighborDragged = true;
+        neighborThumbnails.scrollLeft = neighborDragStartScroll - delta;
+    });
+    function stopNeighborDrag(event) {
+        const didDrag = neighborDragged;
+        if (neighborThumbnails.hasPointerCapture(event.pointerId)) {
+            neighborThumbnails.releasePointerCapture(event.pointerId);
+        }
+        neighborThumbnails.classList.remove('dragging');
+        if (didDrag) setTimeout(() => { neighborDragged = false; }, 0);
+    }
+    neighborThumbnails.addEventListener('pointerup', stopNeighborDrag);
+    neighborThumbnails.addEventListener('pointercancel', stopNeighborDrag);
+    neighborThumbnails.addEventListener('click', event => {
+        if (!neighborDragged) return;
+        event.preventDefault();
+        event.stopPropagation();
+        neighborDragged = false;
+    }, true);
 });

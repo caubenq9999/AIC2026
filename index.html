@@ -4,7 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>HỆ THỐNG TRUY XUẤT VIDEO MFusion-VR</title>
-    <link rel="stylesheet" href="style.css">
+    <link rel="stylesheet" href="style.css?v=20260821-2">
     <link rel="stylesheet" href="share_client.css?v=20260820-3">
     <!-- (THÊM MỚI) API Youtube Player -->
     <script src="https://www.youtube.com/iframe_api"></script>
@@ -245,7 +245,16 @@
                     <div id="neighbor-frames">
                         <h4>Các frame lân cận:</h4>
                         <div class="neighbor-controls">
-                            <div id="neighbor-thumbnails"></div>
+                            <button type="button" id="neighbor-previous" class="neighbor-step-button"
+                                    aria-label="Frame trước">‹</button>
+                            <div id="neighbor-thumbnails" tabindex="0"
+                                 aria-label="Dải frame lân cận; kéo hoặc lăn chuột để cuộn"></div>
+                            <button type="button" id="neighbor-next" class="neighbor-step-button"
+                                    aria-label="Frame sau">›</button>
+                        </div>
+                        <div class="neighbor-status-row">
+                            <span id="neighbor-position">0/0</span>
+                            <span>Cuộn chuột hoặc kéo dải ảnh · phím ← → / A D</span>
                         </div>
                     </div>
                 </div>
@@ -311,7 +320,7 @@
     </section>
 
     <script src="submission-store.js?v=20260820-10"></script>
-    <script src="script.js?v=20260820-10"></script>
+    <script src="script.js?v=20260821-2"></script>
     <script src="share_client.js?v=20260820-3"></script>
 </body>
 </html>

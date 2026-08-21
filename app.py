@@ -1594,11 +1594,13 @@ def get_metadata():
 @app.route('/neighbor_frames', methods=['POST'])
 def get_neighbor_frames():
     try:
-        image_path = request.json['image_path']
+        payload = request.get_json() or {}
+        image_path = payload['image_path']
+        radius = max(1, min(int(payload.get('radius', 15)), 50))
         _, video_id, frame_id_str = get_web_path(image_path)
         if not frame_id_str or video_id == "N/A":
             return jsonify({"neighbors": []})
-        neighbor_ids = get_neighbor_frame_ids(video_id, int(frame_id_str), 5)
+        neighbor_ids = get_neighbor_frame_ids(video_id, int(frame_id_str), radius)
         neighbors = [get_frame_web_path(video_id, frame_id) for frame_id in neighbor_ids]
         return jsonify({"neighbors": [path for path in neighbors if path]})
     except Exception as e:

@@ -24,6 +24,9 @@
         answerLength: document.getElementById('answer-length'),
         trakeEventRow: document.getElementById('trake-event-row'),
         activeEventCount: document.getElementById('active-event-count'),
+        manualCandidate: document.getElementById('manual-candidate'),
+        manualFormatHint: document.getElementById('manual-format-hint'),
+        addManualCandidate: document.getElementById('add-manual-candidate'),
         deleteQuery: document.getElementById('delete-query'),
         fillResults: document.getElementById('fill-results'),
         clearAutomatic: document.getElementById('clear-automatic'),
@@ -37,6 +40,21 @@
         exportZip: document.getElementById('export-zip'),
         exportProject: document.getElementById('export-project'),
         importProject: document.getElementById('import-project'),
+        frameDetailModal: document.getElementById('frame-detail-modal'),
+        frameDetailQuery: document.getElementById('frame-detail-query'),
+        frameDetailTitle: document.getElementById('frame-detail-title'),
+        frameDetailEvents: document.getElementById('frame-detail-events'),
+        frameDetailLoading: document.getElementById('frame-detail-loading'),
+        frameDetailContent: document.getElementById('frame-detail-content'),
+        frameDetailPlayer: document.getElementById('frame-detail-player'),
+        frameDetailVideoMissing: document.getElementById('frame-detail-video-missing'),
+        frameDetailImage: document.getElementById('frame-detail-image'),
+        frameDetailVideoId: document.getElementById('frame-detail-video-id'),
+        frameDetailFrameN: document.getElementById('frame-detail-frame-n'),
+        frameDetailFrameIdx: document.getElementById('frame-detail-frame-idx'),
+        frameDetailTime: document.getElementById('frame-detail-time'),
+        frameDetailOpenVideo: document.getElementById('frame-detail-open-video'),
+        closeFrameDetail: document.getElementById('close-frame-detail'),
     };
 
     function message(text, isError = false) {
@@ -50,6 +68,11 @@
 
     function normalizeQueryId(value) {
         return String(value || '').trim().replace(/\.(txt|csv)$/i, '');
+    }
+
+    function normalizeEventCount(value) {
+        const count = Number(value);
+        return Number.isFinite(count) ? Math.max(2, Math.min(30, Math.trunc(count))) : 2;
     }
 
     function createQuery(queryId, prompt = '') {
@@ -68,10 +91,7 @@
             id,
             type,
             eventCount: type === 'trake'
-                ? Math.max(
-                    2,
-                    Number(state.latestPools?.trakeEventCount || elements.newEventCount.value || 2)
-                )
+                ? normalizeEventCount(state.latestPools?.trakeEventCount || elements.newEventCount.value)
                 : 0,
             prompt,
             answer: '',
@@ -190,6 +210,86 @@
         PrelimSubmission.save(state);
     }
 
+    function parseManualCandidate(query, rawValue) {
+        const parts = String(rawValue || '').trim().split(/[\s,;]+/).filter(Boolean);
+        const expectedFrames = query.type === 'trake' ? normalizeEventCount(query.eventCount) : 1;
+        if (parts.length !== expectedFrames + 1) {
+            const expected = query.type === 'trake'
+                ? `${expectedFrames} frame_idx theo đúng thứ tự event`
+                : 'một frame_idx';
+            throw new Error(`Cần video_id và ${expected}.`);
+        }
+
+        const videoId = parts[0].toUpperCase();
+        if (!/^L\d{2}_V\d+$/.test(videoId)) {
+            throw new Error('video_id không hợp lệ. Ví dụ: L22_V013.');
+        }
+        const frameIndices = parts.slice(1).map(value => Number(value));
+        if (frameIndices.some(value => !Number.isSafeInteger(value) || value < 0)) {
+            throw new Error('frame_idx phải là số nguyên không âm.');
+        }
+
+        return query.type === 'trake'
+            ? { videoId, frameIndices, paths: [] }
+            : { videoId, frameIdx: frameIndices[0], path: '' };
+    }
+
+    async function hydrateManualCandidate(query, candidate) {
+        const frameIndices = query.type === 'trake'
+            ? candidate.frameIndices
+            : [candidate.frameIdx];
+        try {
+            const paths = await Promise.all(frameIndices.map(async frameIdx => {
+                const response = await fetch(`${API_BASE_URL}/submission/playback`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ videoId: candidate.videoId, frameIdx }),
+                });
+                const data = await response.json();
+                return response.ok && !data.error ? (data.path || '') : '';
+            }));
+            if (query.type === 'trake') candidate.paths = paths;
+            else candidate.path = paths[0] || '';
+        } catch (_) {
+            // Không có thumbnail vẫn lưu được dòng; nút Xem sẽ resolve lại khi bấm.
+        }
+        return candidate;
+    }
+
+    async function addManualCandidate() {
+        const state = PrelimSubmission.load();
+        const query = activeQuery(state);
+        if (!query) return;
+        if ((query.pinned || []).length >= 100) {
+            message('Query đã đủ 100 dòng ghim thủ công.', true);
+            return;
+        }
+
+        const oldText = elements.addManualCandidate.textContent;
+        elements.addManualCandidate.disabled = true;
+        elements.addManualCandidate.textContent = 'Đang thêm...';
+        try {
+            const candidate = parseManualCandidate(query, elements.manualCandidate.value);
+            const key = PrelimSubmission.candidateKey(query.type, candidate);
+            if ((query.pinned || []).some(item => PrelimSubmission.candidateKey(query.type, item) === key)) {
+                throw new Error('Dòng này đã có trong phần ghim thủ công.');
+            }
+
+            await hydrateManualCandidate(query, candidate);
+            query.pinned = [...(query.pinned || []), candidate];
+            query.automatic = (query.automatic || [])
+                .filter(item => PrelimSubmission.candidateKey(query.type, item) !== key);
+            PrelimSubmission.save(state);
+            elements.manualCandidate.value = '';
+            message(`Đã ghim thủ công ${candidateDisplay(query, candidate)}.`);
+        } catch (error) {
+            message(`Không thêm được: ${error.message}`, true);
+        } finally {
+            elements.addManualCandidate.disabled = false;
+            elements.addManualCandidate.textContent = oldText;
+        }
+    }
+
     async function viewCandidate(query, candidate, button) {
         const frameIdx = query.type === 'trake'
             ? (candidate.frameIndices || [])[0]
@@ -239,6 +339,108 @@
         }
     }
 
+    function youtubeEmbedUrl(playbackUrl, fallbackSeconds = 0) {
+        if (!playbackUrl) return '';
+        try {
+            const url = new URL(playbackUrl, window.location.origin);
+            let videoId = '';
+            if (url.hostname.includes('youtu.be')) videoId = url.pathname.split('/').filter(Boolean)[0] || '';
+            else if (url.hostname.includes('youtube.com')) {
+                videoId = url.searchParams.get('v') || url.pathname.match(/\/embed\/([^/?]+)/)?.[1] || '';
+            }
+            if (!videoId) return '';
+            const rawStart = url.searchParams.get('t') || url.searchParams.get('start') || fallbackSeconds;
+            const start = Math.max(0, parseInt(String(rawStart).replace(/s$/i, ''), 10) || 0);
+            return `https://www.youtube.com/embed/${encodeURIComponent(videoId)}?autoplay=1&start=${start}`;
+        } catch (_) {
+            return '';
+        }
+    }
+
+    function closeFrameDetail() {
+        elements.frameDetailModal.classList.add('hidden');
+        elements.frameDetailPlayer.src = '';
+    }
+
+    async function loadFrameDetail(query, candidate, eventIndex = 0) {
+        const isTrake = query.type === 'trake';
+        const frameIdx = isTrake ? (candidate.frameIndices || [])[eventIndex] : candidate.frameIdx;
+        const keyframePath = isTrake ? (candidate.paths || [])[eventIndex] : candidate.path;
+        elements.frameDetailLoading.textContent = 'Đang tải metadata...';
+        elements.frameDetailLoading.classList.remove('hidden');
+        elements.frameDetailContent.classList.add('hidden');
+        elements.frameDetailPlayer.src = '';
+
+        Array.from(elements.frameDetailEvents.children).forEach((button, index) => {
+            button.classList.toggle('active', index === eventIndex);
+        });
+
+        try {
+            let response;
+            if (keyframePath) {
+                response = await fetch(`${API_BASE_URL}/metadata`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ image_path: keyframePath }),
+                });
+            } else {
+                response = await fetch(`${API_BASE_URL}/submission/playback`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ videoId: candidate.videoId, frameIdx }),
+                });
+            }
+            const meta = await response.json();
+            if (!response.ok || meta.error) throw new Error(meta.error || 'Không đọc được metadata.');
+
+            const imagePath = keyframePath || meta.path || '';
+            const playbackUrl = meta.playback_url || '';
+            const ptsTime = Number(meta.pts_time || 0);
+            const embedUrl = youtubeEmbedUrl(playbackUrl, ptsTime);
+            elements.frameDetailTitle.textContent = candidate.videoId;
+            elements.frameDetailVideoId.textContent = candidate.videoId;
+            elements.frameDetailFrameN.textContent = meta.n ?? 'N/A';
+            elements.frameDetailFrameIdx.textContent = frameIdx ?? meta.frameIdx ?? meta.frame_idx ?? 'N/A';
+            elements.frameDetailTime.textContent = `${ptsTime.toFixed(2)} giây`;
+            elements.frameDetailImage.src = imagePath
+                ? new URL(imagePath, `${API_BASE_URL}/`).href
+                : '';
+            elements.frameDetailImage.classList.toggle('hidden', !imagePath);
+            elements.frameDetailPlayer.src = embedUrl;
+            elements.frameDetailVideoMissing.classList.toggle('hidden', Boolean(embedUrl));
+            elements.frameDetailOpenVideo.href = playbackUrl || '#';
+            elements.frameDetailOpenVideo.classList.toggle('hidden', !playbackUrl);
+            elements.frameDetailLoading.classList.add('hidden');
+            elements.frameDetailContent.classList.remove('hidden');
+        } catch (error) {
+            elements.frameDetailLoading.textContent = `Không tải được thông tin frame: ${error.message}`;
+        }
+    }
+
+    function showFrameDetail(query, candidate) {
+        elements.frameDetailQuery.textContent = `${query.type.toUpperCase()} · ${query.id}`;
+        elements.frameDetailTitle.textContent = candidate.videoId || 'Thông tin frame';
+        elements.frameDetailEvents.textContent = '';
+        const frameIndices = query.type === 'trake'
+            ? (candidate.frameIndices || [])
+            : [candidate.frameIdx];
+        if (frameIndices.length > 1) {
+            elements.frameDetailEvents.classList.remove('hidden');
+            frameIndices.forEach((frameIdx, index) => {
+                const button = actionButton(
+                    `Event ${index + 1} · ${frameIdx}`,
+                    `Xem frame của event ${index + 1}`,
+                    () => loadFrameDetail(query, candidate, index)
+                );
+                elements.frameDetailEvents.appendChild(button);
+            });
+        } else {
+            elements.frameDetailEvents.classList.add('hidden');
+        }
+        elements.frameDetailModal.classList.remove('hidden');
+        loadFrameDetail(query, candidate, 0);
+    }
+
     function renderRanking(query) {
         elements.rankingRows.textContent = '';
         const finalRows = PrelimSubmission.finalRows(query);
@@ -276,7 +478,7 @@
                 thumbnail.src = new URL(thumbnailPath, `${API_BASE_URL}/`).href;
                 thumbnail.alt = `Keyframe ${candidate.videoId}`;
                 thumbnail.loading = 'lazy';
-                thumbnail.title = 'Bấm để xem video';
+                thumbnail.title = 'Bấm để xem thông tin frame và video';
                 resultWrap.appendChild(thumbnail);
             } else {
                 const placeholder = document.createElement('span');
@@ -294,7 +496,7 @@
                 viewCandidate(query, candidate, watchButton);
             });
             const thumbnail = resultWrap.querySelector('img.ranking-thumbnail');
-            if (thumbnail) thumbnail.addEventListener('click', () => watchButton.click());
+            if (thumbnail) thumbnail.addEventListener('click', () => showFrameDetail(query, candidate));
             actionsCell.appendChild(watchButton);
             if (isPinned) {
                 actionsCell.append(
@@ -328,6 +530,14 @@
         elements.answerLength.textContent = `${(query.answer || '').length}/100`;
         elements.trakeEventRow.classList.toggle('hidden', query.type !== 'trake');
         elements.activeEventCount.value = query.eventCount || 2;
+        if (query.type === 'trake') {
+            const count = normalizeEventCount(query.eventCount);
+            elements.manualCandidate.placeholder = `L22_V013,${Array.from({ length: count }, (_, i) => 18816 + i * 30).join(',')}`;
+            elements.manualFormatHint.textContent = `TRAKE: video_id và đúng ${count} frame_idx theo thứ tự event.`;
+        } else {
+            elements.manualCandidate.placeholder = 'L22_V013,18816';
+            elements.manualFormatHint.textContent = `${query.type.toUpperCase()}: video_id,frame_idx`;
+        }
         renderRanking(query);
         if (!elements.csvPreviewPanel.classList.contains('hidden')) {
             elements.csvPreview.value = csvPreviewFor(query);
@@ -450,6 +660,138 @@
         URL.revokeObjectURL(url);
     }
 
+    function normalizedImportedQuery(queryId, rawQuery) {
+        const id = normalizeQueryId(queryId);
+        const type = PrelimSubmission.queryTypeFromId(id);
+        if (!type || !rawQuery || typeof rawQuery !== 'object' || Array.isArray(rawQuery)) {
+            throw new Error(`Query "${queryId}" không hợp lệ.`);
+        }
+        const declaredType = String(rawQuery.type || type).toLowerCase();
+        if (declaredType !== type) {
+            throw new Error(`Query "${id}" có type ${declaredType}, không khớp hậu tố -${type}.`);
+        }
+        const rawEventCount = Number(rawQuery.eventCount || 2);
+        return {
+            ...rawQuery,
+            id,
+            type,
+            eventCount: type === 'trake' && Number.isFinite(rawEventCount)
+                ? Math.max(2, rawEventCount)
+                : (type === 'trake' ? 2 : 0),
+            prompt: String(rawQuery.prompt || ''),
+            answer: String(rawQuery.answer || ''),
+            pinned: Array.isArray(rawQuery.pinned) ? rawQuery.pinned : [],
+            pool: Array.isArray(rawQuery.pool) ? rawQuery.pool : [],
+            automatic: Array.isArray(rawQuery.automatic) ? rawQuery.automatic : [],
+        };
+    }
+
+    function mergeCandidates(type, localItems, remoteItems, limit, summary, countPinned = false) {
+        const output = [];
+        const seen = new Set();
+        for (const candidate of [...(localItems || []), ...(remoteItems || [])]) {
+            if (!candidate || typeof candidate !== 'object') {
+                summary.duplicates += 1;
+                continue;
+            }
+            const key = PrelimSubmission.candidateKey(type, candidate);
+            if (seen.has(key)) {
+                summary.duplicates += 1;
+                continue;
+            }
+            seen.add(key);
+            if (output.length < limit) {
+                output.push(candidate);
+                if (countPinned && (remoteItems || []).includes(candidate)) summary.addedPinned += 1;
+            } else {
+                summary.overflow += 1;
+            }
+        }
+        return output;
+    }
+
+    function mergeProjectStates(localState, incomingState) {
+        const summary = {
+            newQueries: 0,
+            mergedQueries: 0,
+            addedPinned: 0,
+            duplicates: 0,
+            conflicts: 0,
+            overflow: 0,
+        };
+        const incomingQueries = Object.entries(incomingState.queries || {});
+
+        for (const [incomingId, rawQuery] of incomingQueries) {
+            const remote = normalizedImportedQuery(incomingId, rawQuery);
+            const localId = Object.keys(localState.queries)
+                .find(id => id.toLowerCase() === remote.id.toLowerCase());
+
+            if (!localId) {
+                const pinned = mergeCandidates(remote.type, [], remote.pinned, 100, summary, true);
+                const pinnedKeys = new Set(pinned.map(item => PrelimSubmission.candidateKey(remote.type, item)));
+                const automatic = mergeCandidates(
+                    remote.type,
+                    [],
+                    remote.automatic.filter(item => item && typeof item === 'object'
+                        && !pinnedKeys.has(PrelimSubmission.candidateKey(remote.type, item))),
+                    Math.max(0, 100 - pinned.length),
+                    summary
+                );
+                localState.queries[remote.id] = {
+                    ...remote,
+                    pinned,
+                    pool: mergeCandidates(remote.type, [], remote.pool, 1000, summary),
+                    automatic,
+                };
+                summary.newQueries += 1;
+                continue;
+            }
+
+            const local = normalizedImportedQuery(localId, localState.queries[localId]);
+            if (local.type !== remote.type) {
+                throw new Error(`Query "${localId}" bị trùng tên nhưng khác loại.`);
+            }
+            summary.mergedQueries += 1;
+
+            local.pinned = mergeCandidates(local.type, local.pinned, remote.pinned, 100, summary, true);
+            const pinnedKeys = new Set(local.pinned.map(item => PrelimSubmission.candidateKey(local.type, item)));
+            const automaticCandidates = [...local.automatic, ...remote.automatic]
+                .filter(item => item && typeof item === 'object'
+                    && !pinnedKeys.has(PrelimSubmission.candidateKey(local.type, item)));
+            local.automatic = mergeCandidates(
+                local.type,
+                [],
+                automaticCandidates,
+                Math.max(0, 100 - local.pinned.length),
+                summary
+            );
+            local.pool = mergeCandidates(local.type, local.pool, remote.pool, 1000, summary);
+
+            if (!local.prompt && remote.prompt) local.prompt = remote.prompt;
+            else if (local.prompt && remote.prompt && local.prompt !== remote.prompt) summary.conflicts += 1;
+            if (!local.answer && remote.answer) local.answer = remote.answer;
+            else if (local.answer && remote.answer && local.answer !== remote.answer) summary.conflicts += 1;
+            if (local.type === 'trake' && local.eventCount !== remote.eventCount) summary.conflicts += 1;
+
+            localState.queries[localId] = local;
+        }
+
+        const localPools = localState.latestPools || {};
+        const remotePools = incomingState.latestPools || {};
+        localState.latestPools = {
+            frame: mergeCandidates('kis', localPools.frame, remotePools.frame, 1000, summary),
+            trake: mergeCandidates('trake', localPools.trake, remotePools.trake, 1000, summary),
+            trakeEventCount: Number(localPools.trakeEventCount || remotePools.trakeEventCount || 0),
+        };
+        if (!localState.activeQueryId || !localState.queries[localState.activeQueryId]) {
+            const requested = String(incomingState.activeQueryId || '').toLowerCase();
+            localState.activeQueryId = Object.keys(localState.queries)
+                .find(id => id.toLowerCase() === requested) || Object.keys(localState.queries)[0] || '';
+        }
+        localState.version = 1;
+        return summary;
+    }
+
     elements.newQueryId.addEventListener('input', () => {
         elements.eventCountRow.classList.toggle(
             'hidden', PrelimSubmission.queryTypeFromId(elements.newQueryId.value) !== 'trake'
@@ -486,7 +828,14 @@
         elements.answerLength.textContent = `${elements.qaAnswer.value.length}/100`;
     });
     elements.activeEventCount.addEventListener('change', () => {
-        saveQueryField('eventCount', Math.max(2, Number(elements.activeEventCount.value || 2)));
+        saveQueryField('eventCount', normalizeEventCount(elements.activeEventCount.value));
+    });
+    elements.addManualCandidate.addEventListener('click', addManualCandidate);
+    elements.manualCandidate.addEventListener('keydown', event => {
+        if (event.key === 'Enter') {
+            event.preventDefault();
+            addManualCandidate();
+        }
     });
     elements.fillResults.addEventListener('click', fillFromPool);
     elements.clearAutomatic.addEventListener('click', () => {
@@ -515,16 +864,37 @@
     });
     elements.importProject.addEventListener('change', async () => {
         try {
-            const parsed = JSON.parse(await elements.importProject.files[0].text());
-            if (!parsed || parsed.version !== 1 || typeof parsed.queries !== 'object') {
+            const file = elements.importProject.files[0];
+            if (!file) return;
+            const parsed = JSON.parse(await file.text());
+            if (!parsed || parsed.version !== 1 || !parsed.queries
+                    || typeof parsed.queries !== 'object' || Array.isArray(parsed.queries)) {
                 throw new Error('File project không đúng schema version 1.');
             }
-            PrelimSubmission.save(parsed);
-            message('Đã khôi phục project JSON.');
+            const current = PrelimSubmission.load();
+            const merged = JSON.parse(JSON.stringify(current));
+            const summary = mergeProjectStates(merged, parsed);
+            const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
+            downloadJson(`aic26-before-merge-${timestamp}.json`, current);
+            PrelimSubmission.save(merged);
+            message(
+                `Merge xong: ${summary.newQueries} query mới, ${summary.mergedQueries} query trùng được gộp, `
+                + `${summary.addedPinned} dòng ghim mới. Bỏ ${summary.duplicates} dòng trùng, `
+                + `giữ local ở ${summary.conflicts} conflict, bỏ ${summary.overflow} dòng vượt giới hạn.`
+            );
         } catch (error) {
-            message(error.message, true);
+            message(`Merge thất bại, project hiện tại không bị thay đổi: ${error.message}`, true);
         } finally {
             elements.importProject.value = '';
+        }
+    });
+    elements.closeFrameDetail.addEventListener('click', closeFrameDetail);
+    elements.frameDetailModal.addEventListener('click', event => {
+        if (event.target === elements.frameDetailModal) closeFrameDetail();
+    });
+    document.addEventListener('keydown', event => {
+        if (event.key === 'Escape' && !elements.frameDetailModal.classList.contains('hidden')) {
+            closeFrameDetail();
         }
     });
 
