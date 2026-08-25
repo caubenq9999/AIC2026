@@ -186,6 +186,7 @@ def load_retrieval_data(
                 (frame_id, int(record["frame_idx"]))
                 for frame_id, record in ordered
             ],
+            "paths": [str(record["path"]) for _, record in ordered],
             "fps": next(
                 (float(record["fps"]) for _, record in ordered if record.get("fps") is not None),
                 None,

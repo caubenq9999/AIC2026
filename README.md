@@ -257,6 +257,7 @@ Không push các folder/file sau: `keyframes/`, `embedding/`, `ocr/`,
 | `POST /search_trake_02` | mảng `events` theo thứ tự |
 | `POST /search_trake_image` | ít nhất hai ảnh multipart |
 | `POST /submission/resolve_candidates` | map keyframe sang `frame_idx` thật |
+| `POST /submission/neighbors` | lấy frame cùng video trong biên thời gian quanh các mốc ghim |
 | `POST /submission/playback` | tìm timestamp video gần `frame_idx` để kiểm tra |
 | `POST /submission/export` | validate và tạo `submission.zip` |
 
@@ -267,15 +268,23 @@ Sau khi chạy app, mở `http://localhost:5000/submission-builder` hoặc bấm
 
 1. Tạo/import các query có tên kết thúc bằng `-kis`, `-qa` hoặc `-trake`.
 2. Chọn query đang làm trên header trang search.
-3. Mở chi tiết một frame rồi bấm **📌 Ghim frame**; với TRAKE, ghim cả chuỗi.
-4. Trong Submission Builder, sắp các dòng thủ công ở đầu và bấm
-   **Fill từ ranking gần nhất** để điền phần còn lại, tối đa 100 dòng.
+3. Mở video, tua/phát tới đúng timestamp rồi bấm **📌 Ghim timestamp đang phát**;
+   frame index được tính từ timestamp YouTube, còn dải keyframe tự chạy theo video.
+   Với TRAKE, ghim cả chuỗi.
+4. Trong Submission Builder, kéo tay cầm `⠿` để sắp xếp các dòng ghim, chọn biên thời gian rồi bấm **Fill quanh các frame
+   ghim**, hoặc dùng **◎ Fill quanh** tại một dòng cụ thể. Auto-fill chỉ lấy frame
+   cùng video trong khoảng thời gian đó, không dùng top-K image search.
 5. Nếu đã biết đáp án, nhập thẳng `video_id,frame_idx` vào ô **Thêm kết quả thủ
    công**. TRAKE nhập `video_id` rồi toàn bộ `frame_idx` theo thứ tự event.
 6. Bấm thumbnail để mở thẻ metadata/video ngay trong Builder; dùng **▶ Xem**
    nếu muốn mở video tại timestamp gần frame đã chọn trong tab riêng.
 7. Bấm **Tải submission.zip**. Backend kiểm tra `frame_idx`, số event TRAKE,
    answer QA và tạo đúng cấu trúc `submission/*.csv` không có header.
+
+Có thể dùng **Merge nguyên folder submission CSV** trong mục **Dự phòng** để nhập
+trực tiếp một folder chứa các file `*-kis.csv`, `*-qa.csv`, `*-trake.csv`. Các dòng
+được đưa vào phần ghim theo thứ tự, dữ liệu local được ưu tiên và app tải backup JSON
+trước khi merge.
 
 Bản nháp được lưu trong `localStorage` của trình duyệt. Dùng **Xuất project
 JSON** để sao lưu hoặc gửi cho teammate. Máy tổng hợp dùng **Merge project JSON

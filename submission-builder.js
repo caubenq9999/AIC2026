@@ -29,6 +29,8 @@
         addManualCandidate: document.getElementById('add-manual-candidate'),
         deleteQuery: document.getElementById('delete-query'),
         fillResults: document.getElementById('fill-results'),
+        neighborFillControl: document.getElementById('neighbor-fill-control'),
+        neighborTimeBorder: document.getElementById('neighbor-time-border'),
         clearAutomatic: document.getElementById('clear-automatic'),
         previewCsv: document.getElementById('preview-csv'),
         rankingRows: document.getElementById('ranking-rows'),
@@ -40,6 +42,7 @@
         exportZip: document.getElementById('export-zip'),
         exportProject: document.getElementById('export-project'),
         importProject: document.getElementById('import-project'),
+        importSubmissionFolder: document.getElementById('import-submission-folder'),
         frameDetailModal: document.getElementById('frame-detail-modal'),
         frameDetailQuery: document.getElementById('frame-detail-query'),
         frameDetailTitle: document.getElementById('frame-detail-title'),
@@ -70,6 +73,11 @@
         return String(value || '').trim().replace(/\.(txt|csv)$/i, '');
     }
 
+    function validatedQueryType(queryId) {
+        const match = String(queryId || '').match(/^[A-Za-z0-9][A-Za-z0-9_-]{0,127}-(kis|qa|trake)$/i);
+        return match ? match[1].toLowerCase() : '';
+    }
+
     function normalizeEventCount(value) {
         const count = Number(value);
         return Number.isFinite(count) ? Math.max(2, Math.min(30, Math.trunc(count))) : 2;
@@ -77,7 +85,7 @@
 
     function createQuery(queryId, prompt = '') {
         const id = normalizeQueryId(queryId);
-        const type = PrelimSubmission.queryTypeFromId(id);
+        const type = validatedQueryType(id);
         if (!type) throw new Error('Tên query phải kết thúc bằng -kis, -qa hoặc -trake.');
         const state = PrelimSubmission.load();
         const duplicate = Object.keys(state.queries).find(key => key.toLowerCase() === id.toLowerCase());
@@ -95,6 +103,7 @@
                 : 0,
             prompt,
             answer: '',
+            neighborTimeBorder: 30,
             pinned: [],
             pool: type === 'trake'
                 ? (state.latestPools?.trake || []).slice()
@@ -111,7 +120,8 @@
         }
         const base = `${candidate.videoId},${candidate.frameIdx}`;
         if (query.type === 'qa') {
-            return `${base},${query.answer ? csvCell(query.answer) : '<thiếu answer>'}`;
+            const answer = candidate.answer || query.answer;
+            return `${base},${answer ? csvCell(answer) : '<thiếu answer>'}`;
         }
         return base;
     }
@@ -164,7 +174,7 @@
             const label = document.createElement('span');
             label.textContent = query.id;
             const detail = document.createElement('small');
-            detail.textContent = `${query.type.toUpperCase()} · pool ${(query.pool || []).length}`;
+            detail.textContent = `${query.type.toUpperCase()} · ${(query.pinned || []).length} ghim · ${(query.automatic || []).length} auto`;
             label.appendChild(detail);
             const count = document.createElement('span');
             count.className = 'query-item-count';
@@ -200,6 +210,27 @@
             [query.pinned[index + 1], query.pinned[index]] = [query.pinned[index], query.pinned[index + 1]];
         }
         PrelimSubmission.save(state);
+    }
+
+    function reorderPinned(fromIndex, targetIndex, placeAfter = false) {
+        const state = PrelimSubmission.load();
+        const query = activeQuery(state);
+        if (!query) return;
+        const pinned = query.pinned || [];
+        if (fromIndex < 0 || fromIndex >= pinned.length
+                || targetIndex < 0 || targetIndex >= pinned.length) return;
+
+        let insertionIndex = targetIndex + (placeAfter ? 1 : 0);
+        const [moved] = pinned.splice(fromIndex, 1);
+        if (fromIndex < insertionIndex) insertionIndex -= 1;
+        pinned.splice(Math.max(0, Math.min(insertionIndex, pinned.length)), 0, moved);
+        query.pinned = pinned;
+        PrelimSubmission.save(state);
+    }
+
+    function clearDragIndicators() {
+        elements.rankingRows.querySelectorAll?.('.drag-before, .drag-after, .dragging')
+            .forEach(row => row.classList.remove('drag-before', 'drag-after', 'dragging'));
     }
 
     function removeAutomatic(index) {
@@ -316,10 +347,12 @@
         try {
             // KIS/QA và TRAKE mới đều giữ path keyframe: dùng API metadata cũ,
             // không phụ thuộc server đã restart để nhận route playback mới.
-            const endpoint = keyframePath ? '/metadata' : '/submission/playback';
-            const requestBody = keyframePath
+            const hasExactTimestamp = candidate.ptsTime !== undefined && candidate.ptsTime !== null
+                && candidate.ptsTime !== '' && Number.isFinite(Number(candidate.ptsTime));
+            const endpoint = keyframePath && !hasExactTimestamp ? '/metadata' : '/submission/playback';
+            const requestBody = keyframePath && !hasExactTimestamp
                 ? { image_path: keyframePath }
-                : { videoId: candidate.videoId, frameIdx };
+                : { videoId: candidate.videoId, frameIdx, ptsTime: candidate.ptsTime };
             const response = await fetch(`${API_BASE_URL}${endpoint}`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
@@ -377,7 +410,9 @@
 
         try {
             let response;
-            if (keyframePath) {
+            const hasExactTimestamp = candidate.ptsTime !== undefined && candidate.ptsTime !== null
+                && candidate.ptsTime !== '' && Number.isFinite(Number(candidate.ptsTime));
+            if (keyframePath && !hasExactTimestamp) {
                 response = await fetch(`${API_BASE_URL}/metadata`, {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
@@ -387,7 +422,7 @@
                 response = await fetch(`${API_BASE_URL}/submission/playback`, {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ videoId: candidate.videoId, frameIdx }),
+                    body: JSON.stringify({ videoId: candidate.videoId, frameIdx, ptsTime: candidate.ptsTime }),
                 });
             }
             const meta = await response.json();
@@ -460,7 +495,29 @@
         finalRows.forEach((candidate, index) => {
             const isPinned = index < pinnedCount;
             const tr = document.createElement('tr');
-            if (isPinned) tr.className = 'pinned-row';
+            if (isPinned) {
+                tr.className = 'pinned-row';
+                tr.dataset.pinnedIndex = String(index);
+                tr.addEventListener('dragover', event => {
+                    event.preventDefault();
+                    const bounds = tr.getBoundingClientRect();
+                    const placeAfter = event.clientY >= bounds.top + bounds.height / 2;
+                    tr.classList.toggle('drag-before', !placeAfter);
+                    tr.classList.toggle('drag-after', placeAfter);
+                    if (event.dataTransfer) event.dataTransfer.dropEffect = 'move';
+                });
+                tr.addEventListener('dragleave', () => {
+                    tr.classList.remove('drag-before', 'drag-after');
+                });
+                tr.addEventListener('drop', event => {
+                    event.preventDefault();
+                    const fromIndex = Number(event.dataTransfer?.getData('text/plain'));
+                    const bounds = tr.getBoundingClientRect();
+                    const placeAfter = event.clientY >= bounds.top + bounds.height / 2;
+                    clearDragIndicators();
+                    if (Number.isInteger(fromIndex)) reorderPinned(fromIndex, index, placeAfter);
+                });
+            }
 
             const rankCell = document.createElement('td');
             rankCell.textContent = String(index + 1);
@@ -499,9 +556,37 @@
             if (thumbnail) thumbnail.addEventListener('click', () => showFrameDetail(query, candidate));
             actionsCell.appendChild(watchButton);
             if (isPinned) {
+                const dragHandle = document.createElement('span');
+                dragHandle.className = 'drag-handle';
+                dragHandle.textContent = '⠿';
+                dragHandle.title = 'Kéo để đổi thứ tự; dùng phím ↑ ↓ khi đang focus';
+                dragHandle.setAttribute('role', 'button');
+                dragHandle.setAttribute('tabindex', '0');
+                dragHandle.setAttribute('aria-label', `Đổi vị trí dòng ${index + 1}`);
+                dragHandle.draggable = true;
+                dragHandle.addEventListener('dragstart', event => {
+                    event.dataTransfer.setData('text/plain', String(index));
+                    event.dataTransfer.effectAllowed = 'move';
+                    tr.classList.add('dragging');
+                });
+                dragHandle.addEventListener('dragend', clearDragIndicators);
+                dragHandle.addEventListener('keydown', event => {
+                    if (event.key === 'ArrowUp') {
+                        event.preventDefault();
+                        mutatePinned(index, 'up');
+                    } else if (event.key === 'ArrowDown') {
+                        event.preventDefault();
+                        mutatePinned(index, 'down');
+                    }
+                });
+                actionsCell.prepend(dragHandle);
+                if (query.type !== 'trake') {
+                    const aroundButton = actionButton('◎ Fill quanh', 'Auto-fill quanh đúng video và timestamp này', () => {
+                        fillAroundAnchors([candidate], aroundButton);
+                    });
+                    actionsCell.appendChild(aroundButton);
+                }
                 actionsCell.append(
-                    actionButton('↑', 'Đưa lên', () => mutatePinned(index, 'up')),
-                    actionButton('↓', 'Đưa xuống', () => mutatePinned(index, 'down')),
                     actionButton('×', 'Bỏ ghim', () => mutatePinned(index, 'remove')),
                 );
             } else {
@@ -523,13 +608,16 @@
         elements.activeQueryType.textContent = query.type.toUpperCase();
         elements.activeQueryTitle.textContent = query.id;
         elements.activeQueryStats.textContent =
-            `${(query.pinned || []).length} ghim · ${(query.pool || []).length} trong ranking gần nhất · ${(query.automatic || []).length} auto-fill`;
+            `${(query.pinned || []).length} ghim · ${(query.automatic || []).length} frame lân cận auto-fill`;
         elements.queryPrompt.value = query.prompt || '';
         elements.qaAnswerRow.classList.toggle('hidden', query.type !== 'qa');
         elements.qaAnswer.value = query.answer || '';
         elements.answerLength.textContent = `${(query.answer || '').length}/100`;
         elements.trakeEventRow.classList.toggle('hidden', query.type !== 'trake');
         elements.activeEventCount.value = query.eventCount || 2;
+        elements.neighborFillControl.classList.toggle('hidden', query.type === 'trake');
+        elements.fillResults.classList.toggle('hidden', query.type === 'trake');
+        elements.neighborTimeBorder.value = Number(query.neighborTimeBorder || 30);
         if (query.type === 'trake') {
             const count = normalizeEventCount(query.eventCount);
             elements.manualCandidate.placeholder = `L22_V013,${Array.from({ length: count }, (_, i) => 18816 + i * 30).join(',')}`;
@@ -544,47 +632,68 @@
         }
     }
 
-    async function fillFromPool() {
+    async function fillAroundAnchors(anchors, triggerButton = elements.fillResults) {
         const state = PrelimSubmission.load();
         const query = activeQuery(state);
         if (!query) return;
-        if (!(query.pool || []).length) {
-            message(
-                'Query này chưa có ranking. Quay lại trang search, chọn đúng query và chạy search một lần; sau đó ranking sẽ tự lưu ở đây.',
-                true
-            );
+        if (query.type === 'trake') {
+            message('Auto-fill lân cận hiện chỉ áp dụng cho KIS và QA.', true);
             return;
         }
-        if (query.type !== 'trake' && query.pool.some(item => item.frameIdx === undefined || item.frameIdx === null)) {
-            const oldText = elements.fillResults.textContent;
-            elements.fillResults.disabled = true;
-            elements.fillResults.textContent = 'Đang map frame_idx...';
-            try {
-                const response = await fetch(`${API_BASE_URL}/submission/resolve_candidates`, {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ candidates: query.pool }),
-                });
-                const data = await response.json();
-                if (!response.ok || data.error) throw new Error(data.error || 'Không map được ranking.');
-                query.pool = data.resolved || [];
-                if (!query.pool.length) throw new Error('Không có frame nào map được sang frame_idx.');
-            } catch (error) {
-                message(`Không fill được ranking: ${error.message}`, true);
-                return;
-            } finally {
-                elements.fillResults.disabled = false;
-                elements.fillResults.textContent = oldText;
-            }
+        const usableAnchors = PrelimSubmission.dedupe(query.type, anchors || [])
+            .filter(item => item.videoId && item.frameIdx !== undefined && item.frameIdx !== null);
+        if (!usableAnchors.length) {
+            message('Hãy ghim ít nhất một frame trước khi auto-fill lân cận.', true);
+            return;
         }
-        const pinned = PrelimSubmission.dedupe(query.type, query.pinned || []);
-        const pinnedKeys = new Set(pinned.map(item => PrelimSubmission.candidateKey(query.type, item)));
-        const needed = Math.max(0, 100 - pinned.length);
-        query.automatic = PrelimSubmission.dedupe(query.type, query.pool || [])
-            .filter(item => !pinnedKeys.has(PrelimSubmission.candidateKey(query.type, item)))
-            .slice(0, needed);
-        PrelimSubmission.save(state);
-        message(`Đã giữ ${pinned.length} dòng thủ công và fill ${query.automatic.length} dòng từ ranking.`);
+
+        const timeBorder = Math.max(1, Math.min(600, Number(elements.neighborTimeBorder.value) || 30));
+        query.neighborTimeBorder = timeBorder;
+        const oldText = triggerButton.textContent;
+        triggerButton.disabled = true;
+        triggerButton.textContent = 'Đang lấy frame quanh mốc...';
+        try {
+            const response = await fetch(`${API_BASE_URL}/submission/neighbors`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    anchors: usableAnchors.map(item => ({
+                        videoId: item.videoId,
+                        frameIdx: item.frameIdx,
+                        ptsTime: item.ptsTime,
+                    })),
+                    timeBorder,
+                    limit: 1000,
+                }),
+            });
+            const data = await response.json();
+            if (!response.ok || data.error) {
+                throw new Error(data.error || 'Không lấy được frame lân cận.');
+            }
+
+            const pinned = PrelimSubmission.dedupe(query.type, query.pinned || []);
+            const pinnedKeys = new Set(pinned.map(item => PrelimSubmission.candidateKey(query.type, item)));
+            const needed = Math.max(0, 100 - pinned.length);
+            query.automatic = PrelimSubmission.dedupe(query.type, data.results || [])
+                .filter(item => !pinnedKeys.has(PrelimSubmission.candidateKey(query.type, item)))
+                .slice(0, needed);
+            PrelimSubmission.save(state);
+            message(
+                `Đã giữ ${pinned.length} dòng ghim và fill ${query.automatic.length} frame `
+                + `trong ±${timeBorder}s quanh ${usableAnchors.length} mốc đã chọn.`
+            );
+        } catch (error) {
+            message(`Không auto-fill được: ${error.message}`, true);
+        } finally {
+            triggerButton.disabled = false;
+            triggerButton.textContent = oldText;
+        }
+    }
+
+    async function fillFromPinned() {
+        const query = activeQuery();
+        if (!query) return;
+        await fillAroundAnchors(query.pinned || []);
     }
 
     function exportPayload(state) {
@@ -660,9 +769,252 @@
         URL.revokeObjectURL(url);
     }
 
+    function parseCsv(text) {
+        const rows = [];
+        let row = [];
+        let field = '';
+        let inQuotes = false;
+        const source = String(text || '').replace(/^\uFEFF/, '');
+
+        const finishRow = () => {
+            row.push(field);
+            if (row.some(value => value.trim() !== '')) rows.push(row);
+            row = [];
+            field = '';
+        };
+
+        for (let index = 0; index < source.length; index += 1) {
+            const character = source[index];
+            if (inQuotes) {
+                if (character === '"') {
+                    if (source[index + 1] === '"') {
+                        field += '"';
+                        index += 1;
+                    } else {
+                        inQuotes = false;
+                    }
+                } else {
+                    field += character;
+                }
+                continue;
+            }
+            if (character === '"' && field === '') {
+                inQuotes = true;
+            } else if (character === ',') {
+                row.push(field);
+                field = '';
+            } else if (character === '\n') {
+                finishRow();
+            } else if (character !== '\r') {
+                field += character;
+            }
+        }
+        if (inQuotes) throw new Error('CSV có dấu nháy kép chưa đóng.');
+        if (field !== '' || row.length) finishRow();
+        return rows;
+    }
+
+    function parseFrameIndex(value, fileName, rowNumber) {
+        const normalized = String(value || '').trim();
+        if (!/^\d+$/.test(normalized) || !Number.isSafeInteger(Number(normalized))) {
+            throw new Error(`${fileName}, dòng ${rowNumber}: frame_idx "${normalized}" không hợp lệ.`);
+        }
+        return Number(normalized);
+    }
+
+    function parseSubmissionCsv(fileName, text) {
+        const id = normalizeQueryId(fileName);
+        const type = validatedQueryType(id);
+        if (!type) {
+            throw new Error(`${fileName}: tên file phải kết thúc bằng -kis.csv, -qa.csv hoặc -trake.csv.`);
+        }
+
+        const rows = parseCsv(text);
+        if (!rows.length) throw new Error(`${fileName}: file CSV trống.`);
+        if (rows.length > 100) throw new Error(`${fileName}: vượt quá 100 dòng.`);
+
+        let eventCount = 0;
+        const pinned = rows.map((cells, index) => {
+            const rowNumber = index + 1;
+            const videoId = String(cells[0] || '').trim().toUpperCase();
+            if (!/^L\d{2}_V\d+$/.test(videoId)) {
+                throw new Error(`${fileName}, dòng ${rowNumber}: video_id "${videoId}" không hợp lệ.`);
+            }
+
+            if (type === 'kis') {
+                if (cells.length !== 2) {
+                    throw new Error(`${fileName}, dòng ${rowNumber}: KIS cần đúng 2 cột.`);
+                }
+                return {
+                    videoId,
+                    frameIdx: parseFrameIndex(cells[1], fileName, rowNumber),
+                    path: ''
+                };
+            }
+
+            if (type === 'qa') {
+                if (cells.length !== 3) {
+                    throw new Error(`${fileName}, dòng ${rowNumber}: QA cần đúng 3 cột.`);
+                }
+                const answer = String(cells[2] || '').trim();
+                if (!answer) throw new Error(`${fileName}, dòng ${rowNumber}: thiếu answer.`);
+                if (answer.length > 100) {
+                    throw new Error(`${fileName}, dòng ${rowNumber}: answer vượt quá 100 ký tự.`);
+                }
+                return {
+                    videoId,
+                    frameIdx: parseFrameIndex(cells[1], fileName, rowNumber),
+                    answer,
+                    path: ''
+                };
+            }
+
+            const currentEventCount = cells.length - 1;
+            if (currentEventCount < 2) {
+                throw new Error(`${fileName}, dòng ${rowNumber}: TRAKE cần ít nhất 2 frame_idx.`);
+            }
+            if (!eventCount) eventCount = currentEventCount;
+            if (currentEventCount !== eventCount) {
+                throw new Error(`${fileName}, dòng ${rowNumber}: số event không đồng nhất (cần ${eventCount}).`);
+            }
+            const frameIndices = cells.slice(1)
+                .map(value => parseFrameIndex(value, fileName, rowNumber));
+            if (frameIndices.some((value, position) => position > 0 && value <= frameIndices[position - 1])) {
+                throw new Error(`${fileName}, dòng ${rowNumber}: frame TRAKE phải tăng theo thời gian.`);
+            }
+            return { videoId, frameIndices, paths: [] };
+        });
+
+        const firstAnswer = type === 'qa' ? String(pinned[0]?.answer || '') : '';
+        return {
+            id,
+            type,
+            eventCount: type === 'trake' ? eventCount : 0,
+            prompt: '',
+            answer: firstAnswer,
+            pinned,
+            pool: [],
+            automatic: []
+        };
+    }
+
+    async function importSubmissionFolder() {
+        const csvFiles = Array.from(elements.importSubmissionFolder.files || [])
+            .filter(file => file.name.toLowerCase().endsWith('.csv'))
+            .sort((left, right) => {
+                const leftPath = left.webkitRelativePath || left.name;
+                const rightPath = right.webkitRelativePath || right.name;
+                return leftPath.localeCompare(rightPath, undefined, { numeric: true });
+            });
+        if (!csvFiles.length) throw new Error('Folder không có file .csv nào.');
+
+        const incoming = { version: 1, activeQueryId: '', queries: {}, latestPools: {} };
+        for (const file of csvFiles) {
+            const imported = parseSubmissionCsv(file.name, await file.text());
+            const duplicateId = Object.keys(incoming.queries)
+                .find(id => id.toLowerCase() === imported.id.toLowerCase());
+            if (!duplicateId) {
+                incoming.queries[imported.id] = imported;
+                if (!incoming.activeQueryId) incoming.activeQueryId = imported.id;
+                continue;
+            }
+
+            const existing = incoming.queries[duplicateId];
+            if (existing.type !== imported.type
+                    || (existing.type === 'trake' && existing.eventCount !== imported.eventCount)) {
+                throw new Error(`Các file trùng tên query "${imported.id}" nhưng khác cấu trúc.`);
+            }
+            existing.pinned.push(...imported.pinned);
+            if (!existing.answer && imported.answer) existing.answer = imported.answer;
+        }
+
+        const current = PrelimSubmission.load();
+        const merged = JSON.parse(JSON.stringify(current));
+        const summary = mergeProjectStates(merged, incoming);
+        const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
+        downloadJson(`aic26-before-csv-folder-merge-${timestamp}.json`, current);
+        PrelimSubmission.save(merged);
+        message(
+            `Đã merge ${csvFiles.length} CSV: ${summary.newQueries} query mới, `
+            + `${summary.mergedQueries} query cũ được gộp, ${summary.addedPinned} dòng mới. `
+            + `Bỏ ${summary.duplicates} dòng trùng và ${summary.overflow} dòng vượt giới hạn.`
+        );
+    }
+
+    function normalizeImportedCandidate(type, rawCandidate, queryId, eventCount, allowUnresolved = false) {
+        if (!rawCandidate || typeof rawCandidate !== 'object' || Array.isArray(rawCandidate)) {
+            throw new Error(`Query "${queryId}" chứa candidate không hợp lệ.`);
+        }
+        const videoId = String(rawCandidate.videoId || rawCandidate.video_id || '').trim().toUpperCase();
+        if (!/^L\d{2}_V\d+$/.test(videoId)) {
+            throw new Error(`Query "${queryId}" có video_id "${videoId}" không hợp lệ.`);
+        }
+        const path = String(rawCandidate.path || rawCandidate.web_path || '');
+        const score = Number(rawCandidate.score || 0);
+        const rawPtsTime = rawCandidate.ptsTime ?? rawCandidate.pts_time;
+        const ptsTime = rawPtsTime === undefined || rawPtsTime === null || rawPtsTime === ''
+            ? undefined
+            : Number(rawPtsTime);
+        if (ptsTime !== undefined && (!Number.isFinite(ptsTime) || ptsTime < 0)) {
+            throw new Error(`Query "${queryId}" có timestamp không hợp lệ.`);
+        }
+
+        if (type === 'trake') {
+            const rawFrames = rawCandidate.frameIndices || rawCandidate.frame_indices;
+            if (!Array.isArray(rawFrames)) {
+                throw new Error(`Query "${queryId}" có dòng TRAKE thiếu frameIndices.`);
+            }
+            const frameIndices = rawFrames.map(Number);
+            if (frameIndices.some(value => !Number.isSafeInteger(value) || value < 0)) {
+                throw new Error(`Query "${queryId}" có frame TRAKE không hợp lệ.`);
+            }
+            if (frameIndices.length !== eventCount) {
+                throw new Error(`Query "${queryId}" cần đúng ${eventCount} frame cho mỗi dòng TRAKE.`);
+            }
+            if (frameIndices.some((value, index) => index > 0 && value <= frameIndices[index - 1])) {
+                throw new Error(`Query "${queryId}" có frame TRAKE không tăng theo thời gian.`);
+            }
+            return {
+                videoId,
+                frameIndices,
+                paths: Array.isArray(rawCandidate.paths) ? rawCandidate.paths.map(value => String(value || '')) : [],
+                score: Number.isFinite(score) ? score : 0,
+            };
+        }
+
+        const rawFrameIdx = rawCandidate.frameIdx ?? rawCandidate.frame_idx;
+        if (rawFrameIdx === undefined || rawFrameIdx === null || rawFrameIdx === '') {
+            if (allowUnresolved && path) {
+                return {
+                    videoId,
+                    path,
+                    frame_n: rawCandidate.frame_n,
+                    score: Number.isFinite(score) ? score : 0,
+                };
+            }
+            throw new Error(`Query "${queryId}" có candidate thiếu frame_idx.`);
+        }
+        const frameIdx = Number(rawFrameIdx);
+        if (!Number.isSafeInteger(frameIdx) || frameIdx < 0) {
+            throw new Error(`Query "${queryId}" có frame_idx "${rawFrameIdx}" không hợp lệ.`);
+        }
+        const answer = String(rawCandidate.answer || '');
+        if (answer.length > 100) {
+            throw new Error(`Query "${queryId}" có answer vượt quá 100 ký tự.`);
+        }
+        return {
+            videoId,
+            frameIdx,
+            path,
+            ...(ptsTime !== undefined ? { ptsTime } : {}),
+            ...(type === 'qa' && answer ? { answer } : {}),
+            score: Number.isFinite(score) ? score : 0,
+        };
+    }
+
     function normalizedImportedQuery(queryId, rawQuery) {
         const id = normalizeQueryId(queryId);
-        const type = PrelimSubmission.queryTypeFromId(id);
+        const type = validatedQueryType(id);
         if (!type || !rawQuery || typeof rawQuery !== 'object' || Array.isArray(rawQuery)) {
             throw new Error(`Query "${queryId}" không hợp lệ.`);
         }
@@ -670,19 +1022,36 @@
         if (declaredType !== type) {
             throw new Error(`Query "${id}" có type ${declaredType}, không khớp hậu tố -${type}.`);
         }
-        const rawEventCount = Number(rawQuery.eventCount || 2);
+        const candidateLists = ['pinned', 'automatic', 'pool']
+            .flatMap(field => Array.isArray(rawQuery[field]) ? rawQuery[field] : []);
+        const trakeSample = type === 'trake'
+            ? candidateLists.find(candidate => Array.isArray(candidate?.frameIndices || candidate?.frame_indices))
+            : null;
+        const inferredEventCount = trakeSample
+            ? (trakeSample.frameIndices || trakeSample.frame_indices).length
+            : (type === 'trake' ? 2 : 0);
+        const rawEventCount = Number(rawQuery.eventCount || inferredEventCount || 2);
+        const eventCount = type === 'trake' ? normalizeEventCount(rawEventCount) : 0;
+        const answer = String(rawQuery.answer || '');
+        if (answer.length > 100) throw new Error(`Query "${id}" có answer vượt quá 100 ký tự.`);
+        const normalizeList = (field, allowUnresolved = false) => (
+            Array.isArray(rawQuery[field])
+                ? rawQuery[field].map(candidate => normalizeImportedCandidate(
+                    type, candidate, id, eventCount, allowUnresolved
+                ))
+                : []
+        );
         return {
             ...rawQuery,
             id,
             type,
-            eventCount: type === 'trake' && Number.isFinite(rawEventCount)
-                ? Math.max(2, rawEventCount)
-                : (type === 'trake' ? 2 : 0),
+            eventCount,
             prompt: String(rawQuery.prompt || ''),
-            answer: String(rawQuery.answer || ''),
-            pinned: Array.isArray(rawQuery.pinned) ? rawQuery.pinned : [],
-            pool: Array.isArray(rawQuery.pool) ? rawQuery.pool : [],
-            automatic: Array.isArray(rawQuery.automatic) ? rawQuery.automatic : [],
+            answer,
+            neighborTimeBorder: Math.max(1, Math.min(600, Number(rawQuery.neighborTimeBorder) || 30)),
+            pinned: normalizeList('pinned'),
+            pool: normalizeList('pool', true),
+            automatic: normalizeList('automatic'),
         };
     }
 
@@ -711,6 +1080,13 @@
     }
 
     function mergeProjectStates(localState, incomingState) {
+        if (!incomingState || incomingState.version !== 1 || !incomingState.queries
+                || typeof incomingState.queries !== 'object' || Array.isArray(incomingState.queries)) {
+            throw new Error('Project merge không đúng schema version 1.');
+        }
+        if (!localState || !localState.queries || typeof localState.queries !== 'object') {
+            throw new Error('Project local đang hỏng schema; hãy khôi phục từ backup JSON.');
+        }
         const summary = {
             newQueries: 0,
             mergedQueries: 0,
@@ -837,7 +1213,12 @@
             addManualCandidate();
         }
     });
-    elements.fillResults.addEventListener('click', fillFromPool);
+    elements.fillResults.addEventListener('click', fillFromPinned);
+    elements.neighborTimeBorder.addEventListener('change', () => {
+        const value = Math.max(1, Math.min(600, Number(elements.neighborTimeBorder.value) || 30));
+        elements.neighborTimeBorder.value = value;
+        saveQueryField('neighborTimeBorder', value);
+    });
     elements.clearAutomatic.addEventListener('click', () => {
         saveQueryField('automatic', []);
         message('Đã xóa phần auto-fill; các dòng ghim vẫn được giữ nguyên.');
@@ -886,6 +1267,15 @@
             message(`Merge thất bại, project hiện tại không bị thay đổi: ${error.message}`, true);
         } finally {
             elements.importProject.value = '';
+        }
+    });
+    elements.importSubmissionFolder.addEventListener('change', async () => {
+        try {
+            await importSubmissionFolder();
+        } catch (error) {
+            message(`Merge folder CSV thất bại, project hiện tại không bị thay đổi: ${error.message}`, true);
+        } finally {
+            elements.importSubmissionFolder.value = '';
         }
     });
     elements.closeFrameDetail.addEventListener('click', closeFrameDetail);

@@ -4,14 +4,14 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>AIC26 · Submission Builder</title>
-    <link rel="stylesheet" href="submission-builder.css?v=20260821-1">
+    <link rel="stylesheet" href="submission-builder.css?v=20260825-2">
 </head>
 <body>
     <header class="builder-header">
         <div>
             <a href="/" class="back-link">← Quay lại tìm kiếm</a>
             <h1>Submission Builder · Vòng sơ tuyển</h1>
-            <p>Ghim kết quả chắc chắn lên đầu, sau đó fill ranking còn lại đến tối đa 100 dòng.</p>
+            <p>Ghim mốc chắc chắn lên đầu, sau đó fill các frame cùng video quanh timestamp đó.</p>
         </div>
         <button type="button" id="export-zip" class="primary-button">Tải submission.zip</button>
     </header>
@@ -44,7 +44,10 @@
                 <button type="button" id="export-project">Xuất project JSON</button>
                 <label class="file-button" for="import-project">Merge project JSON từ teammate</label>
                 <input id="import-project" type="file" accept="application/json,.json" hidden>
-                <p class="backup-note">App tự tải backup bản hiện tại trước khi merge. Dữ liệu local luôn được ưu tiên.</p>
+                <label class="file-button" for="import-submission-folder">Merge nguyên folder submission CSV</label>
+                <input id="import-submission-folder" type="file" accept=".csv,text/csv"
+                       webkitdirectory directory multiple hidden>
+                <p class="backup-note">Folder có thể chứa nhiều file <code>*-kis.csv</code>, <code>*-qa.csv</code>, <code>*-trake.csv</code>. App tự tải backup trước khi merge; dữ liệu local luôn được ưu tiên.</p>
             </section>
         </aside>
 
@@ -89,7 +92,12 @@
 
                 <div class="toolbar">
                     <a href="/" class="secondary-link">← Mở trang search để ghim</a>
-                    <button type="button" id="fill-results">Fill từ ranking gần nhất</button>
+                    <label id="neighbor-fill-control" class="neighbor-fill-control" for="neighbor-time-border">
+                        Biên thời gian ±
+                        <input id="neighbor-time-border" type="number" min="1" max="600" step="1" value="30">
+                        giây
+                    </label>
+                    <button type="button" id="fill-results">Fill quanh các frame ghim</button>
                     <button type="button" id="clear-automatic">Xóa phần auto-fill</button>
                     <button type="button" id="preview-csv">Xem trước CSV</button>
                 </div>
@@ -100,7 +108,7 @@
                     <h3>Thứ tự sẽ ghi vào CSV</h3>
                     <span id="final-count">0/100</span>
                 </div>
-                <p class="ranking-note">Các dòng 📌 thủ công luôn đứng trước. Dùng nút ↑ ↓ để đổi thứ tự phần ghim.</p>
+                <p class="ranking-note">Các dòng 📌 thủ công luôn đứng trước. Kéo tay cầm ⠿ để đổi thứ tự phần ghim.</p>
                 <div class="table-wrap">
                     <table>
                         <thead>
@@ -170,6 +178,6 @@
     </div>
 
     <script src="submission-store.js?v=20260821-1"></script>
-    <script src="submission-builder.js?v=20260821-1"></script>
+    <script src="submission-builder.js?v=20260825-2"></script>
 </body>
 </html>

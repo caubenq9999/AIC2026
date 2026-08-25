@@ -143,6 +143,11 @@ button:hover, .file-button:hover, .secondary-link:hover { border-color: var(--ac
 .answer-row { margin-top: 12px; }
 .answer-row label { display: flex; justify-content: space-between; margin-bottom: 5px; }
 .toolbar { display: flex; flex-wrap: wrap; gap: 8px; margin: 16px 0 10px; }
+.neighbor-fill-control {
+    display: inline-flex; align-items: center; gap: 6px; padding: 6px 9px;
+    border: 1px solid var(--line); border-radius: 7px; background: #f8fbfc;
+}
+.neighbor-fill-control input { width: 68px; padding: 3px 6px; }
 .message { min-height: 21px; margin-bottom: 8px; color: var(--success); font-size: 13px; font-weight: 600; }
 .message.error { color: var(--danger); }
 .ranking-heading { margin-top: 8px; }
@@ -154,6 +159,9 @@ th, td { padding: 9px 10px; border-bottom: 1px solid var(--line); text-align: le
 th { color: var(--muted); background: #f7f9fa; font-size: 11px; text-transform: uppercase; }
 tbody tr:last-child td { border-bottom: none; }
 tr.pinned-row { background: var(--pinned); }
+tr.pinned-row.dragging { opacity: .45; }
+tr.pinned-row.drag-before { box-shadow: inset 0 3px 0 var(--accent); }
+tr.pinned-row.drag-after { box-shadow: inset 0 -3px 0 var(--accent); }
 .source-badge { white-space: nowrap; font-size: 11px; font-weight: 800; }
 .row-value { font-family: Consolas, "Courier New", monospace; word-break: break-all; }
 .result-with-thumbnail {
@@ -183,6 +191,13 @@ img.ranking-thumbnail:hover { transform: scale(1.06); border-color: var(--accent
 }
 .row-actions { display: flex; gap: 4px; white-space: nowrap; }
 .row-actions button { padding: 4px 7px; }
+.drag-handle {
+    display: inline-grid; width: 28px; min-height: 28px; place-items: center;
+    border: 1px solid var(--line); border-radius: 6px; color: var(--muted);
+    background: #fff; cursor: grab; font-size: 18px; line-height: 1; user-select: none;
+}
+.drag-handle:hover, .drag-handle:focus-visible { color: var(--accent); border-color: var(--accent); outline: none; }
+.drag-handle:active { cursor: grabbing; }
 .empty-ranking { padding: 32px; color: var(--muted); text-align: center; }
 
 .preview-panel { margin-top: 16px; padding-top: 14px; border-top: 1px solid var(--line); }

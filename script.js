@@ -1,7 +1,7 @@
 // === (THÊM MỚI) BIẾN TOÀN CỤC CHO YOUTUBE PLAYER ===
 
 let ytPlayer; // Biến giữ đối tượng player
-let currentKeyframeMap = { fps: null }; // (THAY ĐỔI) Bỏ a, b, thêm fps
+let currentKeyframeMap = { fps: null, times: [], data: [], paths: [] };
 let videoTimeInterval; // Biến giữ interval để check thời gian
 let currentLoadedYoutubeId = null; // (ĐỔI TÊN) Giữ ID YouTube đang tải
 let currentLoadedInternalMapId = null; // (THÊM MỚI) Giữ ID map nội bộ đang tải
@@ -197,6 +197,8 @@ document.addEventListener('DOMContentLoaded', () => {
     // === KẾT THÚC DOM MỚI ===
     let currentNeighborPaths = [];
     let currentDetailPath = "";
+    let currentPlaybackKeyframe = null;
+    let playbackTrackingSuspendedUntil = 0;
     const neighborLoadsInFlight = new Set();
     let neighborDragged = false;
     let neighborHoldTimeout = null;
@@ -295,23 +297,30 @@ document.addEventListener('DOMContentLoaded', () => {
             alert('TRAKE cần ghim cả chuỗi sự kiện từ kết quả TRAKE, không ghim một frame đơn.');
             return;
         }
-        if (!currentDetailPath) {
-            alert('Chưa chọn frame nào.');
+        const videoId = currentSubmissionVideoId
+            || document.getElementById('video-name').textContent.trim();
+        const frameIdx = Number.parseInt(currentFrameIndexSpan.textContent, 10);
+        if (!videoId || !Number.isSafeInteger(frameIdx)) {
+            alert('Video chưa chạy tới một frame hợp lệ.');
             return;
         }
 
         prelimPinCurrentFrame.disabled = true;
         const originalText = prelimPinCurrentFrame.textContent;
-        prelimPinCurrentFrame.textContent = 'Đang map frame_idx...';
+        prelimPinCurrentFrame.textContent = 'Đang ghim timestamp...';
         try {
-            const videoId = document.getElementById('video-name').textContent.trim();
-            const resolved = await resolveFrameCandidates([{
+            // frameIdx lấy trực tiếp từ timestamp YouTube (time × FPS), không map
+            // ngược về frame_idx của keyframe tìm kiếm. path chỉ dùng làm thumbnail.
+            const candidate = {
                 videoId,
-                path: currentDetailPath,
+                frameIdx,
+                path: currentPlaybackKeyframe?.videoId === videoId
+                    ? currentPlaybackKeyframe.path
+                    : currentDetailPath,
+                ptsTime: Number.parseFloat(currentVideoTimeSpan.textContent) || 0,
                 score: 0
-            }]);
-            if (!resolved.length) throw new Error('Không tìm thấy frame_idx thật trong metadata.');
-            if (addPinnedCandidate(resolved[0], active.query.type)) {
+            };
+            if (addPinnedCandidate(candidate, active.query.type)) {
                 prelimPinCurrentFrame.textContent = '✓ Đã ghim lên đầu';
                 setTimeout(() => { prelimPinCurrentFrame.textContent = originalText; }, 1300);
             }
@@ -1536,8 +1545,8 @@ document.addEventListener('DOMContentLoaded', () => {
         currentLoadedInternalMapId = internalVideoId;
         clearInterval(videoTimeInterval); // Dừng interval cũ
 
-        // (THAY ĐỔI) Reset map, chỉ cần fps
-        currentKeyframeMap = { fps: null };
+        currentKeyframeMap = { fps: null, times: [], data: [], paths: [] };
+        currentPlaybackKeyframe = null;
 
         currentFrameIndexSpan.textContent = "Đang tải...";
         try {
@@ -1552,11 +1561,16 @@ document.addEventListener('DOMContentLoaded', () => {
 
             const mapData = await response.json(); // Mong đợi {"fps": 25.0, ...}
 
-            // (THAY ĐỔI) Chỉ lấy FPS.
             currentKeyframeMap.fps = mapData.fps ? parseFloat(mapData.fps) : null;
+            currentKeyframeMap.times = Array.isArray(mapData.times)
+                ? mapData.times.map(Number)
+                : [];
+            currentKeyframeMap.data = Array.isArray(mapData.data) ? mapData.data : [];
+            currentKeyframeMap.paths = Array.isArray(mapData.paths) ? mapData.paths : [];
 
             if (currentKeyframeMap.fps) {
                 console.log(`Tải thành công FPS: ${currentKeyframeMap.fps}`);
+                updateRealTimeFrame();
             } else {
                 console.warn("Không tìm thấy giá trị 'fps' trong file map JSON.");
                 currentFrameIndexSpan.textContent = "Lỗi FPS";
@@ -1576,6 +1590,8 @@ document.addEventListener('DOMContentLoaded', () => {
 
         const currentTime = ytPlayer.getCurrentTime();
         currentVideoTimeSpan.textContent = currentTime.toFixed(2);
+        currentPlaybackKeyframe = closestTrackedKeyframe(currentTime);
+        syncDetailToPlaybackKeyframe(currentPlaybackKeyframe);
 
         // === (THAY ĐỔI) SỬ DỤNG CÔNG THỨC Time * FPS ===
         let frameIdx = "N/A";
@@ -1608,6 +1624,7 @@ document.addEventListener('DOMContentLoaded', () => {
     function onPlayerStateChange(event) {
         if (event.data == YT.PlayerState.PLAYING) {
             // Bắt đầu interval khi video chạy
+            clearInterval(videoTimeInterval);
             videoTimeInterval = setInterval(updateRealTimeFrame, 250); // Cập nhật 4 lần/giây
         } else {
             // Dừng interval khi video Tạm dừng, Kết thúc, v.v.
@@ -1901,6 +1918,51 @@ document.addEventListener('DOMContentLoaded', () => {
         }
     }
 
+    function closestTrackedKeyframe(currentTime) {
+        const times = currentKeyframeMap.times;
+        if (!times.length || currentKeyframeMap.data.length !== times.length) return null;
+        const insertion = bisect_left(times, currentTime);
+        let index;
+        if (insertion <= 0) index = 0;
+        else if (insertion >= times.length) index = times.length - 1;
+        else {
+            index = currentTime - times[insertion - 1] < times[insertion] - currentTime
+                ? insertion - 1
+                : insertion;
+        }
+        const entry = currentKeyframeMap.data[index] || [];
+        const frameN = Number(entry[0]);
+        const frameIdx = Number(entry[1]);
+        let path = currentKeyframeMap.paths[index] || '';
+        if (!path) {
+            path = currentNeighborPaths.find(item => keyframeNumber(item) === frameN) || '';
+        }
+        return {
+            videoId: currentLoadedInternalMapId,
+            frameN,
+            frameIdx,
+            ptsTime: Number(times[index]),
+            path
+        };
+    }
+
+    function syncDetailToPlaybackKeyframe(keyframe) {
+        if (!keyframe || !keyframe.path || detailBox.classList.contains('hidden')) return;
+        if (performance.now() < playbackTrackingSuspendedUntil) return;
+        if (keyframe.videoId !== document.getElementById('video-name').textContent.trim()) return;
+        if (canonicalKeyframePath(keyframe.path) === canonicalKeyframePath(currentDetailPath)) return;
+
+        currentDetailPath = keyframe.path;
+        document.getElementById('detail-image').src = keyframe.path;
+        document.getElementById('meta-n').textContent = keyframe.frameN;
+        document.getElementById('meta-pts').textContent = keyframe.ptsTime.toFixed(2);
+        document.getElementById('meta-idx').textContent = keyframe.frameIdx;
+
+        const selectedIndex = updateNeighborSelection(keyframe.path);
+        if (selectedIndex < 0) loadNeighborWindow(keyframe.path, true);
+        else maybeLoadMoreNeighbors();
+    }
+
     function keyframeVideoKey(path) {
         const parts = canonicalKeyframePath(path).split('/');
         return parts.length >= 2 ? parts[parts.length - 2] : '';
@@ -1963,8 +2025,10 @@ document.addEventListener('DOMContentLoaded', () => {
             });
             const data = await response.json();
             if (!response.ok || data.error) throw new Error(data.error || 'Không tải được frame lân cận.');
-            // Bỏ response cũ nếu người dùng đã chuyển sang video khác.
+            // Bỏ response cũ nếu người dùng đã chuyển video hoặc một window
+            // replace cũ trả về sau khi playback đã chạy sang keyframe khác.
             if (keyframeVideoKey(centerPath) !== keyframeVideoKey(currentDetailPath)) return;
+            if (replace && canonicalKeyframePath(centerPath) !== canonicalKeyframePath(currentDetailPath)) return;
             const nextPaths = replace ? (data.neighbors || []) : mergeNeighborPaths(data.neighbors || []);
             const changed = nextPaths.length !== currentNeighborPaths.length
                 || nextPaths.some((path, index) => canonicalKeyframePath(path) !== canonicalKeyframePath(currentNeighborPaths[index]));
@@ -2004,6 +2068,7 @@ document.addEventListener('DOMContentLoaded', () => {
             return;
         }
         document.querySelectorAll(".gallery-item.selected").forEach(el => el.classList.remove("selected"));
+        playbackTrackingSuspendedUntil = performance.now() + 2000;
         if (imgElement && imgElement.classList) imgElement.classList.add("selected");
         const preserveNeighborStrip = Boolean(options.preserveNeighborStrip)
             && keyframeVideoKey(imagePath) === keyframeVideoKey(currentDetailPath);

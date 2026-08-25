@@ -1777,6 +1777,92 @@ def resolve_submission_candidates():
         return jsonify({"error": str(exc)}), 400
 
 
+@app.route('/submission/neighbors', methods=['POST'])
+def resolve_submission_neighbors():
+    """Return keyframes around one or more pinned timestamps in the same videos."""
+    try:
+        payload = request.get_json() or {}
+        anchors = payload.get("anchors")
+        if not isinstance(anchors, list) or not anchors:
+            raise ValueError("Cần ít nhất một frame ghim để auto-fill.")
+        if len(anchors) > 100:
+            raise ValueError("Chỉ nhận tối đa 100 frame ghim.")
+
+        time_border = float(payload.get("timeBorder", 30))
+        if not math.isfinite(time_border) or time_border <= 0 or time_border > 600:
+            raise ValueError("Biên thời gian phải lớn hơn 0 và không quá 600 giây.")
+        limit = max(1, min(int(payload.get("limit", 1000)), 1000))
+
+        results = []
+        seen = set()
+        resolved_anchors = []
+        for position, anchor in enumerate(anchors, start=1):
+            if not isinstance(anchor, dict):
+                raise ValueError(f"Anchor {position} không hợp lệ.")
+            video_id = str(anchor.get("videoId") or anchor.get("video_id") or "").upper()
+            records = metadata_cache.get(video_id)
+            if not records:
+                raise ValueError(f"Không tìm thấy metadata của {video_id!r}.")
+
+            raw_pts_time = anchor.get("ptsTime", anchor.get("pts_time"))
+            target_time = None
+            if raw_pts_time not in (None, ""):
+                target_time = float(raw_pts_time)
+                if not math.isfinite(target_time) or target_time < 0:
+                    raise ValueError(f"Timestamp anchor {position} không hợp lệ.")
+
+            raw_frame_idx = anchor.get("frameIdx", anchor.get("frame_idx"))
+            if target_time is None:
+                if raw_frame_idx in (None, ""):
+                    raise ValueError(f"Anchor {position} thiếu frame_idx/timestamp.")
+                frame_idx = int(raw_frame_idx)
+                fps = keyframe_time_cache.get(video_id, {}).get("fps")
+                if fps and float(fps) > 0:
+                    target_time = frame_idx / float(fps)
+                else:
+                    closest = min(
+                        records.values(),
+                        key=lambda record: abs(int(record.get("frame_idx", 0)) - frame_idx),
+                    )
+                    target_time = float(closest.get("pts_time", 0) or 0)
+
+            nearby = [
+                record for record in records.values()
+                if abs(float(record.get("pts_time", 0) or 0) - target_time) <= time_border
+            ]
+            nearby.sort(key=lambda record: (
+                abs(float(record.get("pts_time", 0) or 0) - target_time),
+                float(record.get("pts_time", 0) or 0),
+            ))
+            resolved_anchors.append({"videoId": video_id, "ptsTime": target_time})
+            for record in nearby:
+                candidate_key = (video_id, int(record["frame_idx"]))
+                if candidate_key in seen:
+                    continue
+                seen.add(candidate_key)
+                pts_time = float(record.get("pts_time", 0) or 0)
+                results.append({
+                    "videoId": video_id,
+                    "frameIdx": int(record["frame_idx"]),
+                    "frame_n": int(record["frame_id"]),
+                    "ptsTime": pts_time,
+                    "path": record.get("path") or "",
+                    "distanceSeconds": abs(pts_time - target_time),
+                })
+                if len(results) >= limit:
+                    break
+            if len(results) >= limit:
+                break
+
+        return jsonify({
+            "results": results,
+            "anchors": resolved_anchors,
+            "timeBorder": time_border,
+        })
+    except (TypeError, ValueError) as exc:
+        return jsonify({"error": str(exc)}), 400
+
+
 @app.route('/submission/playback', methods=['POST'])
 def resolve_submission_playback():
     """Return the video URL nearest to a submitted frame_idx."""
@@ -1788,11 +1874,25 @@ def resolve_submission_playback():
         if not video_records:
             raise ValueError(f"Không tìm thấy video {video_id!r}.")
 
-        closest = min(
-            video_records.values(),
-            key=lambda record: abs(int(record.get("frame_idx", 0)) - frame_idx),
-        )
-        pts_time = float(closest.get("pts_time", 0) or 0)
+        raw_pts_time = payload.get("ptsTime", payload.get("pts_time"))
+        if raw_pts_time not in (None, ""):
+            pts_time = float(raw_pts_time)
+        else:
+            fps = keyframe_time_cache.get(video_id, {}).get("fps")
+            pts_time = frame_idx / float(fps) if fps and float(fps) > 0 else None
+        if pts_time is not None and (not math.isfinite(pts_time) or pts_time < 0):
+            raise ValueError("Timestamp không hợp lệ.")
+        if pts_time is None:
+            closest = min(
+                video_records.values(),
+                key=lambda record: abs(int(record.get("frame_idx", 0)) - frame_idx),
+            )
+            pts_time = float(closest.get("pts_time", 0) or 0)
+        else:
+            closest = min(
+                video_records.values(),
+                key=lambda record: abs(float(record.get("pts_time", 0) or 0) - pts_time),
+            )
         watch_url = video_url_cache.get(video_id)
         if watch_url:
             separator = '&' if '?' in watch_url else '?'
@@ -1803,7 +1903,8 @@ def resolve_submission_playback():
         return jsonify({
             "videoId": video_id,
             "requestedFrameIdx": frame_idx,
-            "frameIdx": int(closest.get("frame_idx", 0)),
+            "frameIdx": frame_idx,
+            "keyframeFrameIdx": int(closest.get("frame_idx", 0)),
             "pts_time": pts_time,
             "path": closest.get("path"),
             "playback_url": playback_url,
@@ -1861,9 +1962,13 @@ def export_preliminary_submission():
 
                     if query_type in {"kis", "qa"}:
                         frame_idx = int(row.get("frameIdx"))
+                        if frame_idx < 0:
+                            raise ValueError(
+                                f"{query_name} dòng {row_number}: frame_idx phải không âm."
+                            )
                         csv_row = [video_id, frame_idx]
                         if query_type == "qa":
-                            answer = str(row.get("answer") or "")
+                            answer = str(row.get("answer") or "").strip()
                             if not answer:
                                 raise ValueError(
                                     f"{query_name} dòng {row_number}: thiếu answer."
@@ -1880,6 +1985,10 @@ def export_preliminary_submission():
                                 f"{query_name} dòng {row_number}: thiếu danh sách frame TRAKE."
                             )
                         frame_indices = [int(value) for value in frame_indices]
+                        if any(value < 0 for value in frame_indices):
+                            raise ValueError(
+                                f"{query_name} dòng {row_number}: frame TRAKE phải không âm."
+                            )
                         if event_count < 2 or len(frame_indices) != event_count:
                             raise ValueError(
                                 f"{query_name} dòng {row_number}: cần đúng {event_count} frames."
