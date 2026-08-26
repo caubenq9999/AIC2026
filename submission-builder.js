@@ -50,6 +50,7 @@
         frameDetailLoading: document.getElementById('frame-detail-loading'),
         frameDetailContent: document.getElementById('frame-detail-content'),
         frameDetailPlayer: document.getElementById('frame-detail-player'),
+        frameDetailLocalPlayer: document.getElementById('frame-detail-local-player'),
         frameDetailVideoMissing: document.getElementById('frame-detail-video-missing'),
         frameDetailImage: document.getElementById('frame-detail-image'),
         frameDetailVideoId: document.getElementById('frame-detail-video-id'),
@@ -360,8 +361,13 @@
             });
             const data = await response.json();
             if (!response.ok || data.error) throw new Error(data.error || 'Không tìm thấy video.');
-            const target = data.playback_url || data.path;
+            let target = data.playback_url || data.path;
             if (!target) throw new Error('Video này không có playback URL hoặc keyframe fallback.');
+            if (data.playback_type === 'local') {
+                const localTarget = new URL(target, window.location.origin);
+                localTarget.hash = `t=${Math.max(0, Number(data.playback_start ?? data.pts_time ?? 0) || 0)}`;
+                target = localTarget.href;
+            }
             previewTab.location.href = new URL(target, window.location.origin).href;
         } catch (error) {
             previewTab.close();
@@ -393,6 +399,9 @@
     function closeFrameDetail() {
         elements.frameDetailModal.classList.add('hidden');
         elements.frameDetailPlayer.src = '';
+        elements.frameDetailLocalPlayer.pause();
+        elements.frameDetailLocalPlayer.removeAttribute('src');
+        elements.frameDetailLocalPlayer.load();
     }
 
     async function loadFrameDetail(query, candidate, eventIndex = 0) {
@@ -403,6 +412,11 @@
         elements.frameDetailLoading.classList.remove('hidden');
         elements.frameDetailContent.classList.add('hidden');
         elements.frameDetailPlayer.src = '';
+        elements.frameDetailPlayer.classList.add('hidden');
+        elements.frameDetailLocalPlayer.pause();
+        elements.frameDetailLocalPlayer.removeAttribute('src');
+        elements.frameDetailLocalPlayer.load();
+        elements.frameDetailLocalPlayer.classList.add('hidden');
 
         Array.from(elements.frameDetailEvents.children).forEach((button, index) => {
             button.classList.toggle('active', index === eventIndex);
@@ -432,6 +446,8 @@
             const playbackUrl = meta.playback_url || '';
             const ptsTime = Number(meta.pts_time || 0);
             const embedUrl = youtubeEmbedUrl(playbackUrl, ptsTime);
+            const isLocalPlayback = meta.playback_type === 'local'
+                || (playbackUrl && new URL(playbackUrl, window.location.origin).pathname.startsWith('/videos/'));
             elements.frameDetailTitle.textContent = candidate.videoId;
             elements.frameDetailVideoId.textContent = candidate.videoId;
             elements.frameDetailFrameN.textContent = meta.n ?? 'N/A';
@@ -441,9 +457,32 @@
                 ? new URL(imagePath, `${API_BASE_URL}/`).href
                 : '';
             elements.frameDetailImage.classList.toggle('hidden', !imagePath);
-            elements.frameDetailPlayer.src = embedUrl;
-            elements.frameDetailVideoMissing.classList.toggle('hidden', Boolean(embedUrl));
-            elements.frameDetailOpenVideo.href = playbackUrl || '#';
+            if (isLocalPlayback) {
+                const absolutePlaybackUrl = new URL(playbackUrl, `${API_BASE_URL}/`).href;
+                elements.frameDetailLocalPlayer.classList.remove('hidden');
+                elements.frameDetailLocalPlayer.src = absolutePlaybackUrl;
+                elements.frameDetailLocalPlayer.addEventListener('loadedmetadata', () => {
+                    elements.frameDetailLocalPlayer.currentTime = Math.min(
+                        Math.max(0, Number(meta.playback_start ?? ptsTime) || 0),
+                        Number.isFinite(elements.frameDetailLocalPlayer.duration)
+                            ? elements.frameDetailLocalPlayer.duration
+                            : Math.max(0, Number(meta.playback_start ?? ptsTime) || 0)
+                    );
+                    elements.frameDetailLocalPlayer.play().catch(() => {});
+                }, { once: true });
+                elements.frameDetailLocalPlayer.load();
+            } else {
+                elements.frameDetailPlayer.classList.toggle('hidden', !embedUrl);
+                elements.frameDetailPlayer.src = embedUrl;
+            }
+            elements.frameDetailVideoMissing.classList.toggle('hidden', Boolean(isLocalPlayback || embedUrl));
+            const openVideoUrl = playbackUrl
+                ? new URL(playbackUrl, `${API_BASE_URL}/`)
+                : null;
+            if (openVideoUrl && isLocalPlayback) {
+                openVideoUrl.hash = `t=${Math.max(0, Number(meta.playback_start ?? ptsTime) || 0)}`;
+            }
+            elements.frameDetailOpenVideo.href = openVideoUrl ? openVideoUrl.href : '#';
             elements.frameDetailOpenVideo.classList.toggle('hidden', !playbackUrl);
             elements.frameDetailLoading.classList.add('hidden');
             elements.frameDetailContent.classList.remove('hidden');

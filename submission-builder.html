@@ -4,7 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>AIC26 · Submission Builder</title>
-    <link rel="stylesheet" href="submission-builder.css?v=20260825-2">
+    <link rel="stylesheet" href="submission-builder.css?v=20260826-1">
 </head>
 <body>
     <header class="builder-header">
@@ -154,8 +154,10 @@
                     <iframe id="frame-detail-player" title="Video tại frame đã chọn"
                             allow="autoplay; encrypted-media; picture-in-picture"
                             allowfullscreen></iframe>
+                    <video id="frame-detail-local-player" class="hidden"
+                           controls preload="metadata"></video>
                     <div id="frame-detail-video-missing" class="frame-detail-video-missing hidden">
-                        Video này không có YouTube URL.
+                        Không tìm thấy video local hoặc URL dự phòng.
                     </div>
                 </div>
 
@@ -178,6 +180,6 @@
     </div>
 
     <script src="submission-store.js?v=20260821-1"></script>
-    <script src="submission-builder.js?v=20260825-2"></script>
+    <script src="submission-builder.js?v=20260826-1"></script>
 </body>
 </html>

@@ -4,6 +4,8 @@ let ytPlayer; // Biến giữ đối tượng player
 let currentKeyframeMap = { fps: null, times: [], data: [], paths: [] };
 let videoTimeInterval; // Biến giữ interval để check thời gian
 let currentLoadedYoutubeId = null; // (ĐỔI TÊN) Giữ ID YouTube đang tải
+let currentLoadedLocalUrl = null;
+let currentPlaybackKind = null;
 let currentLoadedInternalMapId = null; // (THÊM MỚI) Giữ ID map nội bộ đang tải
 // === (THÊM MỚI) BIẾN TOÀN CỤC CHO SUBMISSION PANEL ===
 let currentSubmissionVideoId = null; // ID video nội bộ (L21_V001)
@@ -151,6 +153,7 @@ document.addEventListener('DOMContentLoaded', () => {
     const videoPlayerArea = document.getElementById('video-player-area');
     const videoPlayerTitle = document.getElementById('video-player-title');
     const closeVideoPlayerButton = document.getElementById('close-video-player');
+    const localVideoPlayer = document.getElementById('local-video-player');
 
     // DOM cho Panel thời gian thực
     const realTimePanel = document.getElementById('real-time-panel');
@@ -520,6 +523,8 @@ document.addEventListener('DOMContentLoaded', () => {
         if (ytPlayer && typeof ytPlayer.stopVideo === 'function') { // Thêm check
             ytPlayer.stopVideo(); // Dùng API để dừng
         }
+        localVideoPlayer.pause();
+        currentPlaybackKind = null;
         if (videoTimeInterval) {
             clearInterval(videoTimeInterval); // Dừng interval
         }
@@ -1581,14 +1586,38 @@ document.addEventListener('DOMContentLoaded', () => {
             currentFrameIndexSpan.textContent = "Lỗi";
         }
     }
+    function currentPlaybackTime() {
+        if (currentPlaybackKind === 'local') {
+            return Number.isFinite(localVideoPlayer.currentTime) ? localVideoPlayer.currentTime : null;
+        }
+        if (currentPlaybackKind === 'youtube'
+            && ytPlayer && typeof ytPlayer.getCurrentTime === 'function') {
+            const time = ytPlayer.getCurrentTime();
+            return Number.isFinite(time) ? time : null;
+        }
+        return null;
+    }
+
+    function startPlaybackTracking() {
+        clearInterval(videoTimeInterval);
+        videoTimeInterval = setInterval(updateRealTimeFrame, 250);
+    }
+
+    localVideoPlayer.addEventListener('play', startPlaybackTracking);
+    localVideoPlayer.addEventListener('pause', () => {
+        clearInterval(videoTimeInterval);
+        updateRealTimeFrame();
+    });
+    localVideoPlayer.addEventListener('ended', () => clearInterval(videoTimeInterval));
+    localVideoPlayer.addEventListener('seeked', updateRealTimeFrame);
+
     // 2. Cập nhật UI thởi gian thực (được gọi bởi setInterval)
     // 2. Cập nhật UI thởi gian thực (được gọi bởi setInterval)
     function updateRealTimeFrame() {
-        if (!ytPlayer || typeof ytPlayer.getCurrentTime !== 'function') {
+        const currentTime = currentPlaybackTime();
+        if (currentTime === null) {
             return; // Player chưa sẵn sàng
         }
-
-        const currentTime = ytPlayer.getCurrentTime();
         currentVideoTimeSpan.textContent = currentTime.toFixed(2);
         currentPlaybackKeyframe = closestTrackedKeyframe(currentTime);
         syncDetailToPlaybackKeyframe(currentPlaybackKeyframe);
@@ -1624,8 +1653,7 @@ document.addEventListener('DOMContentLoaded', () => {
     function onPlayerStateChange(event) {
         if (event.data == YT.PlayerState.PLAYING) {
             // Bắt đầu interval khi video chạy
-            clearInterval(videoTimeInterval);
-            videoTimeInterval = setInterval(updateRealTimeFrame, 250); // Cập nhật 4 lần/giây
+            startPlaybackTracking(); // Cập nhật 4 lần/giây
         } else {
             // Dừng interval khi video Tạm dừng, Kết thúc, v.v.
             clearInterval(videoTimeInterval);
@@ -1637,23 +1665,86 @@ document.addEventListener('DOMContentLoaded', () => {
         }
     }
 
+    function prepareVideoPlayer(videoTitle, internalVideoId) {
+        if (!internalVideoId) {
+            console.error("Không có ID (Internal) để tải bản đồ keyframe.");
+            return false;
+        }
+        videoPlayerTitle.textContent = videoTitle || "Video Player";
+        videoPlayerArea.classList.remove("hidden");
+        submissionPanel.classList.remove('hidden');
+        currentSubmissionVideoId = internalVideoId;
+        resetSubmissionForms();
+        updateSubmissionUIVisibility();
+        loadKeyframeMap(internalVideoId);
+        return true;
+    }
+
+    function showLocalVideoPlayer(playbackUrl, startTime, videoTitle, internalVideoId) {
+        if (!playbackUrl || !prepareVideoPlayer(videoTitle, internalVideoId)) return;
+
+        if (ytPlayer && typeof ytPlayer.pauseVideo === 'function') ytPlayer.pauseVideo();
+        const youtubeElement = document.getElementById('youtube-player');
+        if (youtubeElement) youtubeElement.classList.add('hidden');
+        localVideoPlayer.classList.remove('hidden');
+        currentPlaybackKind = 'local';
+
+        const absoluteUrl = new URL(playbackUrl, `${API_BASE_URL}/`).href;
+        const safeStart = Math.max(0, Number(startTime) || 0);
+        const seekAndPlay = () => {
+            if (currentLoadedLocalUrl !== absoluteUrl) return;
+            localVideoPlayer.currentTime = Math.min(
+                safeStart,
+                Number.isFinite(localVideoPlayer.duration) ? localVideoPlayer.duration : safeStart
+            );
+            updateRealTimeFrame();
+            localVideoPlayer.play().catch(() => {
+                // Trình duyệt có thể chặn autoplay; controls vẫn cho phép người dùng bấm phát.
+            });
+        };
+
+        if (currentLoadedLocalUrl !== absoluteUrl) {
+            currentLoadedLocalUrl = absoluteUrl;
+            localVideoPlayer.src = absoluteUrl;
+            localVideoPlayer.load();
+            localVideoPlayer.addEventListener('loadedmetadata', seekAndPlay, { once: true });
+        } else if (localVideoPlayer.readyState >= 1) {
+            seekAndPlay();
+        } else {
+            localVideoPlayer.addEventListener('loadedmetadata', seekAndPlay, { once: true });
+        }
+    }
+
+    function showPlayback(playbackUrl, playbackType, startTime, videoTitle, internalVideoId) {
+        if (!playbackUrl) return;
+        const url = new URL(playbackUrl, `${API_BASE_URL}/`);
+        if (playbackType === 'local' || url.pathname.startsWith('/videos/')) {
+            showLocalVideoPlayer(url.href, startTime, videoTitle, internalVideoId);
+            return;
+        }
+
+        let youtubeVideoId = '';
+        if (url.hostname.includes('youtu.be')) {
+            youtubeVideoId = url.pathname.split('/').filter(Boolean)[0] || '';
+        } else if (url.hostname.includes('youtube.com')) {
+            youtubeVideoId = url.searchParams.get('v')
+                || (url.pathname.match(/\/embed\/([^/?]+)/) || [])[1]
+                || '';
+        }
+        const rawStart = url.searchParams.get('t') || url.searchParams.get('start') || startTime;
+        const resolvedStart = Math.max(0, parseFloat(String(rawStart || 0).replace(/s$/i, '')) || 0);
+        showVideoPlayer(youtubeVideoId, resolvedStart, videoTitle, internalVideoId);
+    }
+
     // === (CẬP NHẬT) Hàm hiển thị video player ===
     function showVideoPlayer(youtubeVideoId, startTime, videoTitle, internalVideoId) { // (THÊM MỚI) internalVideoId
         if (!youtubeVideoId) { console.error("Không có video ID (YouTube) để phát."); return; }
-        if (!internalVideoId) { console.error("Không có ID (Internal) để tải bản đồ keyframe."); return; }
-
-        videoPlayerTitle.textContent = videoTitle || "Video Player";
-        // [SỬA LỖI !important]
-        videoPlayerArea.classList.remove("hidden");
-
-        // (THÊM MỚI) Hiển thị và reset panel submission
-        // [SỬA LỖI !important]
-        submissionPanel.classList.remove('hidden');
-        currentSubmissionVideoId = internalVideoId; // Set ID để submit
-        resetSubmissionForms(); // Hàm mới để reset
-        updateSubmissionUIVisibility(); // Cập nhật video ID
-        // Tải bản đồ keyframe cho video này
-        loadKeyframeMap(internalVideoId); // (THAY ĐỔI) Dùng internalVideoId
+        if (!prepareVideoPlayer(videoTitle, internalVideoId)) return;
+        localVideoPlayer.pause();
+        localVideoPlayer.classList.add('hidden');
+        const youtubeElement = document.getElementById('youtube-player');
+        if (youtubeElement) youtubeElement.classList.remove('hidden');
+        currentPlaybackKind = 'youtube';
         // Tạo player mới hoặc tải video mới
         if (ytPlayer && currentLoadedYoutubeId === youtubeVideoId) { // (THAY ĐỔI) Check YouTube ID
             // Nếu player đã tồn tại *và* video ID youtube giống hệt
@@ -2059,10 +2150,14 @@ document.addEventListener('DOMContentLoaded', () => {
             // Chỉ mở video (nếu có)
             if (imgElement && imgElement.watch_url) { // imgElement ở đây là item ASR
                 try {
-                    const url = new URL(imgElement.watch_url);
-                    const youtubeVideoId = url.searchParams.get('v');
-                    const startTime = Math.floor(imgElement.start);
-                    showVideoPlayer(youtubeVideoId, startTime, imgElement.video_id, imgElement.video_id);
+                    const startTime = Number(imgElement.playback_start ?? imgElement.start ?? 0);
+                    showPlayback(
+                        imgElement.watch_url,
+                        imgElement.playback_type,
+                        startTime,
+                        imgElement.video_id,
+                        imgElement.video_id
+                    );
                 } catch (e) { console.error("Lỗi khi xử lý URL video ASR:", e); }
             }
             return;
@@ -2124,14 +2219,16 @@ document.addEventListener('DOMContentLoaded', () => {
                 meta.frame_idx !== null && meta.frame_idx !== undefined ? meta.frame_idx : "N/A";
             if (meta.playback_url) {
                 noVideoLinkSpan.style.display = 'none';
-                const url = new URL(meta.playback_url);
-                const timeParam = url.searchParams.get('t');
-                const startTime = timeParam ? parseInt(timeParam.replace('s', ''), 10) : 0;
-                const youtubeVideoId = new URL(meta.playback_url.split('&t=')[0]).searchParams.get('v');
+                const startTime = Number(meta.playback_start ?? meta.pts_time ?? 0);
                 const videoTitle = videoId_from_path;
 
-                // (QUAN TRỌNG) Gọi hàm showVideoPlayer mới
-                showVideoPlayer(youtubeVideoId, startTime, videoTitle, videoId_from_path); // (THAY ĐỔI) Thêm videoId_from_path
+                showPlayback(
+                    meta.playback_url,
+                    meta.playback_type,
+                    startTime,
+                    videoTitle,
+                    videoId_from_path
+                );
             } else {
                 noVideoLinkSpan.style.display = 'inline';
                 // Nếu ảnh này không có video, tắt player (nếu đang mở)

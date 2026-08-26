@@ -85,6 +85,7 @@ print("--- KHỞI ĐỘNG HỆ THỐNG TRUY VẤN HÌNH ẢNH ---")
 # --- 2. CẤU HÌNH ---
 index_name = "aic_ocr_index"
 KEYFRAMES_DIR = project_path("AIC_KEYFRAMES_DIR", "keyframes")
+VIDEOS_DIR = project_path("AIC_VIDEOS_DIR", "video")
 OCR_METADATA_PATH = resolve_ocr_metadata_path()
 OCR_TEXT_DIR = project_path(
     "AIC_OCR_TEXT_DIR", "OCR_original_no_LLM", "OCR"
@@ -100,6 +101,34 @@ JINA_CAPTION_VECTORS_DIR = project_path(
     "jina",
     "caption_embeddings_npy",
 )
+
+
+def build_local_video_index(videos_dir):
+    """Index browser-playable local videos by their internal ID (for example L21_V001)."""
+    if not videos_dir.is_dir():
+        print(f"CẢNH BÁO: Không tìm thấy folder video local {videos_dir}.")
+        return {}
+
+    supported_extensions = {".mp4", ".webm", ".mov"}
+    index = {}
+    for video_path in sorted(videos_dir.rglob("*")):
+        if not video_path.is_file() or video_path.suffix.lower() not in supported_extensions:
+            continue
+        video_id = video_path.stem.upper()
+        if not re.fullmatch(r"L\d+_V\d+", video_id):
+            continue
+        if video_id in index:
+            print(
+                f"CẢNH BÁO: Trùng video local {video_id}; "
+                f"giữ {index[video_id]}, bỏ qua {video_path}."
+            )
+            continue
+        index[video_id] = video_path.resolve()
+    return index
+
+
+local_video_index = build_local_video_index(VIDEOS_DIR)
+print(f"Loaded {len(local_video_index)} local videos from {VIDEOS_DIR}.")
 
 # --- 3. CLASS BM25 TỰ IMPLEMENT CỦA BẠN ---
 class BM25:
@@ -206,6 +235,37 @@ keyframe_time_cache = retrieval_data.keyframe_time_cache
 video_frame_ids = retrieval_data.video_frame_ids
 video_url_cache = retrieval_data.video_url_cache
 print(f"Loaded {len(image_records)} embedding/OCR records from {len(metadata_cache)} videos.")
+
+
+def build_playback_info(video_id, pts_time=0):
+    """Prefer a local video and fall back to its external watch URL."""
+    normalized_video_id = str(video_id or "").upper()
+    try:
+        playback_start = max(0.0, float(pts_time or 0))
+    except (TypeError, ValueError):
+        playback_start = 0.0
+
+    if normalized_video_id in local_video_index:
+        return {
+            "playback_url": f"/videos/{normalized_video_id}",
+            "playback_type": "local",
+            "playback_start": playback_start,
+        }
+
+    watch_url = video_url_cache.get(normalized_video_id)
+    if watch_url:
+        separator = '&' if '?' in watch_url else '?'
+        return {
+            "playback_url": f"{watch_url}{separator}t={int(playback_start)}s",
+            "playback_type": "youtube",
+            "playback_start": playback_start,
+        }
+
+    return {
+        "playback_url": None,
+        "playback_type": None,
+        "playback_start": playback_start,
+    }
 
 # File filtered đã nhúng OCR text. Với metadata legacy, overlay JSONL vẫn được
 # hỗ trợ để tái tạo đúng cùng kết quả mà không sửa nguồn canonical.
@@ -1376,7 +1436,10 @@ def search_asr():
             video_id = doc['video_id']
             final_doc = doc.copy()
 
-            final_doc['watch_url'] = video_url_cache.get(video_id)
+            playback_info = build_playback_info(video_id, final_doc.get('start', 0))
+            final_doc['watch_url'] = playback_info['playback_url']
+            final_doc['playback_type'] = playback_info['playback_type']
+            final_doc['playback_start'] = playback_info['playback_start']
 
             target_start_time = final_doc['start']
             closest_frame_data = find_closest_keyframe(video_id, target_start_time)
@@ -1580,12 +1643,7 @@ def get_metadata():
         frame_id = int(frame_id_str)
         meta = dict(metadata_cache.get(video_id, {}).get(frame_id, {}))
         meta['n'] = frame_id
-        watch_url = video_url_cache.get(video_id)
-        if watch_url and meta.get('pts_time') is not None:
-            separator = '&' if '?' in watch_url else '?'
-            meta['playback_url'] = f"{watch_url}{separator}t={int(float(meta['pts_time']))}s"
-        else:
-            meta['playback_url'] = watch_url
+        meta.update(build_playback_info(video_id, meta.get('pts_time', 0)))
         return jsonify(meta)
     except Exception as e:
         return jsonify({"error": str(e)}), 500
@@ -1893,12 +1951,7 @@ def resolve_submission_playback():
                 video_records.values(),
                 key=lambda record: abs(float(record.get("pts_time", 0) or 0) - pts_time),
             )
-        watch_url = video_url_cache.get(video_id)
-        if watch_url:
-            separator = '&' if '?' in watch_url else '?'
-            playback_url = f"{watch_url}{separator}t={int(pts_time)}s"
-        else:
-            playback_url = None
+        playback_info = build_playback_info(video_id, pts_time)
 
         return jsonify({
             "videoId": video_id,
@@ -1907,7 +1960,7 @@ def resolve_submission_playback():
             "keyframeFrameIdx": int(closest.get("frame_idx", 0)),
             "pts_time": pts_time,
             "path": closest.get("path"),
-            "playback_url": playback_url,
+            **playback_info,
         })
     except (TypeError, ValueError) as exc:
         return jsonify({"error": str(exc)}), 400
@@ -2045,6 +2098,11 @@ def health():
         "status": "ok" if hybrid_available else "degraded",
         "device": device,
         "records": len(image_records),
+        "local_videos": {
+            "available": bool(local_video_index),
+            "count": len(local_video_index),
+            "directory": str(VIDEOS_DIR),
+        },
         "jina": {"available": jina_available, "reason": jina_reason},
         "jina_hybrid": {
             "available": hybrid_available,
@@ -2061,6 +2119,12 @@ def serve_index(): return send_from_directory(str(BASE_DIR), 'index.html')
 @app.route('/submission-builder')
 def serve_submission_builder():
     return send_from_directory(str(BASE_DIR), 'submission-builder.html')
+@app.route('/videos/<video_id>')
+def serve_local_video(video_id):
+    video_path = local_video_index.get(str(video_id).upper())
+    if video_path is None:
+        abort(404)
+    return send_file(str(video_path), conditional=True)
 @app.route('/<path:path>')
 def serve_static(path):
     if path not in PUBLIC_STATIC_FILES:

@@ -192,6 +192,7 @@ Nếu artifact nằm ở `D:\AIC2026-data`, đặt biến môi trường:
 ```powershell
 $dataRoot = "D:\AIC2026-data"
 $env:AIC_KEYFRAMES_DIR = "$dataRoot\keyframes"
+$env:AIC_VIDEOS_DIR = "$dataRoot\video"
 $env:AIC_OCR_METADATA_PATH = "$dataRoot\ocr\metadata_ocr_filtered"
 $env:AIC_ASR_METADATA_DIR = "$dataRoot\asr\metadata_asr_clean"
 $env:AIC_JINA_VECTORS_DIR = "$dataRoot\embedding\jina\jina_embeddings_npy"
@@ -205,6 +206,9 @@ Mở `http://localhost:5000`. Model Jina được tải lazy ở truy vấn sema
 tiên; lần đầu cần Internet và sẽ lâu hơn. `GROQ_API_KEY` chỉ cần cho nút Query
 Expansion, không cần cho retrieval.
 
+Player ưu tiên file MP4 trong `video/` (tìm đệ quy theo tên như `L21_V001.mp4`).
+Nếu không có file local tương ứng, hệ thống mới dùng URL YouTube trong metadata.
+
 Kiểm tra nhanh dịch vụ:
 
 ```powershell
@@ -216,6 +220,7 @@ Invoke-RestMethod http://localhost:5000/health
 | Biến | Mặc định |
 |---|---|
 | `AIC_KEYFRAMES_DIR` | `keyframes` |
+| `AIC_VIDEOS_DIR` | `video` |
 | `AIC_OCR_METADATA_PATH` | ưu tiên folder `ocr/metadata_ocr_filtered` |
 | `AIC_OCR_TEXT_DIR` | tùy chọn; chỉ overlay khi dùng metadata legacy |
 | `AIC_ASR_METADATA_DIR` | `asr/metadata_asr_clean` |
@@ -239,7 +244,7 @@ git add -u -- test_reranker.py
 git status --short
 ```
 
-Không push các folder/file sau: `keyframes/`, `embedding/`, `ocr/`,
+Không push các folder/file sau: `keyframes/`, `video/`, `embedding/`, `ocr/`,
 `OCR_original_no_LLM/`, `asr/`, `Captions/`, `.cache/`, `.venv/`, `*.npy`,
 `*.zip` và model weights. `.gitignore` đã chặn các nhóm này.
 
@@ -248,6 +253,7 @@ Không push các folder/file sau: `keyframes/`, `embedding/`, `ocr/`,
 | Endpoint | Nội dung |
 |---|---|
 | `GET /health` | trạng thái artifact/runtime |
+| `GET /videos/<video_id>` | stream video local, có hỗ trợ HTTP Range |
 | `GET /semantic_models` | trạng thái Jina và Jina Hybrid |
 | `POST /search` | `semantic_model`: `jina` hoặc `jina-hybrid` |
 | `POST /search_ocr` | OCR BM25 |

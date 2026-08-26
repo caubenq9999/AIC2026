@@ -809,7 +809,8 @@ header.slim-header {
 }
 #video-player-title::after { content: ' \2922'; font-size: 12px; color: var(--text-muted); }
 #video-player-title:hover { color: var(--accent); }
-#youtube-player { border: none; aspect-ratio: 16 / 9; height: auto; width: 100%; background: #000; border-radius: 8px; }
+#youtube-player,
+#local-video-player { border: none; aspect-ratio: 16 / 9; height: auto; width: 100%; background: #000; border-radius: 8px; }
 .real-time-panel { margin-top: 14px; padding: 12px 16px; background: var(--bg-sunken); border-radius: 8px; border: 1px solid var(--border-light); }
 .real-time-panel h4 { margin-bottom: 8px; color: var(--text-primary); font-size: 14px; font-weight: 700; }
 .real-time-panel p { margin: 5px 0; font-size: 13px; color: var(--text-secondary); }
