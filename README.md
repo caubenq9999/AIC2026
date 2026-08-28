@@ -66,9 +66,9 @@ AIC2026/
 │
 ├── embedding/apple_finetuned/                  # [Artifact]
 │   ├── apple_clip_epoch_5_inference.pt          # checkpoint không chứa optimizer
-│   ├── L21-*.zip                                # NPZ shards + image_names
-│   ├── ...
-│   └── L30-*.zip
+│   ├── L21-*.zip ... L30-*.zip                  # giữ ZIP; hoặc giải nén thành:
+│   ├── L21/shard_000000.npz ...
+│   └── L30/shard_*.npz
 │
 ├── ocr/                                        # [Artifact]
 │   ├── metadata_ocr_filtered.zip               # file tải về
@@ -129,7 +129,7 @@ data-root/
 │   └── caption_embeddings_npy/L21.npy ... L30.npy
 ├── embedding/apple_finetuned/
 │   ├── apple_clip_epoch_5_inference.pt
-│   └── L21-*.zip ... L30-*.zip
+│   └── L21-*.zip ... L30-*.zip              # hoặc L21/...L30/shard_*.npz
 ├── ocr/
 │   ├── metadata_ocr_filtered.zip           # File vận chuyển/tải về
 │   └── metadata_ocr_filtered/              # Runtime dùng folder đã giải nén
@@ -143,7 +143,8 @@ Các bộ vector phải có cùng thứ tự row với metadata, 1024 chiều,
 đã L2-normalize. Tổng cộng phải có 317.961 rows. Số row từng collection nằm trong
 `artifacts-manifest.json`. Apple-CLIP export dùng `float16` trong NPZ; lần khởi
 động đầu app xác minh toàn bộ `image_names`, chuyển sang cache mmap `float32` và
-những lần sau dùng lại cache đó.
+những lần sau dùng lại cache đó. Có thể giữ nguyên 10 ZIP hoặc giải nén thành các
+folder `L21`…`L30`; nếu tồn tại cả hai, runtime ưu tiên folder đã giải nén.
 
 `metadata_ocr_filtered.zip` chứa cả metadata canonical và `ocr_text` lấy từ OCR
 original sau khi lọc ticker L21/L22. Trước khi chạy, giải nén ZIP vào
