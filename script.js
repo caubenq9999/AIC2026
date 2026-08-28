@@ -109,6 +109,8 @@ document.addEventListener('DOMContentLoaded', () => {
     const queryExpansionBox = document.getElementById('query-expansion-box');
     const expandQueryButton = document.getElementById('expand-query-button');
     const queryExpansionOptions = document.getElementById('query-expansion-options');
+    const appleTranslationBox = document.getElementById('apple-translation-box');
+    const appleTranslationCheckbox = document.getElementById('apple-translation-checkbox');
     // (THÊM MỚI) DOM cho danh sách ô nhập sự kiện của TRAKE
     const trakeInputArea = document.getElementById('trake-input-area');
     const trakeEventRows = document.getElementById('trake-event-rows');
@@ -689,6 +691,14 @@ document.addEventListener('DOMContentLoaded', () => {
                     label.title = info.reason || label.title;
                 }
             });
+            const checkedMode = document.querySelector('input[name="search-mode"]:checked');
+            if (checkedMode?.disabled) {
+                const fallback = Array.from(searchModeRadios).find(radio => !radio.disabled);
+                if (fallback) {
+                    fallback.checked = true;
+                    updateControls();
+                }
+            }
         } catch (error) {
             console.warn('Không lấy được trạng thái semantic models:', error);
         }
@@ -1013,6 +1023,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
         // (THÊM MỚI) Ẩn/hiện các tùy chọn
         if (queryExpansionBox) queryExpansionBox.classList.add('hidden'); // (THÊM MỚI)
+        if (appleTranslationBox) appleTranslationBox.classList.add('hidden');
         groupResultsBox.classList.add('hidden'); // Ẩn group box
         if (windowSizeBox) windowSizeBox.classList.add('hidden'); // Ẩn window size
         imageUploadArea.classList.add('hidden'); // Ẩn single upload mặc định
@@ -1051,6 +1062,9 @@ document.addEventListener('DOMContentLoaded', () => {
                 // (THÊM MỚI) Query Expansion chỉ áp dụng cho Semantic Search
                 if (queryExpansionBox) queryExpansionBox.classList.remove('hidden');
             }
+            if (searchMode === 'semantic-apple-clip' && appleTranslationBox) {
+                appleTranslationBox.classList.remove('hidden');
+            }
         }
 
         // (SỬA LỖI) Logic ASR/Image container
@@ -1064,6 +1078,7 @@ document.addEventListener('DOMContentLoaded', () => {
         }
     }
     const searchModeLabels = {
+        'semantic-apple-clip': 'Semantic · Apple-CLIP',
         'semantic-jina': 'Semantic · Jina',
         'semantic-jina-hybrid': 'Jina · Hybrid',
         ocr: 'OCR',
@@ -1262,6 +1277,9 @@ document.addEventListener('DOMContentLoaded', () => {
             if (searchMode.startsWith('semantic-')) {
                 endpoint = '/search';
                 payload.semantic_model = searchMode.replace('semantic-', '');
+                if (searchMode === 'semantic-apple-clip') {
+                    payload.translate_query = appleTranslationCheckbox?.checked !== false;
+                }
             }
             else if (searchMode === 'ocr') {
                 endpoint = '/search_ocr';
@@ -1333,7 +1351,10 @@ document.addEventListener('DOMContentLoaded', () => {
             const semanticLabel = data.semantic_model
                 ? ` bằng ${data.semantic_model.toUpperCase()}`
                 : '';
-            statusMessage.textContent = `Tìm thấy ${totalResults} kết quả${semanticLabel}.`;
+            const translatedLabel = data.query_translated
+                ? ` · query EN: ${data.search_query}`
+                : (data.translation_reason ? ` · ${data.translation_reason}` : '');
+            statusMessage.textContent = `Tìm thấy ${totalResults} kết quả${semanticLabel}${translatedLabel}.`;
 
         } catch (error) {
             console.error('Lỗi khi tìm kiếm:', error);

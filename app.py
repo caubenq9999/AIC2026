@@ -64,9 +64,11 @@ from retrieval_data import (
     parse_keyframe_path,
 )
 from semantic_search import (
+    AppleClipTextEncoder,
     JinaTextEncoder,
     ModelUnavailableError,
     ShardedNpyIndex,
+    prepare_npz_archive_cache,
 )
 from groq import Groq
 from flask_cors import CORS
@@ -100,6 +102,25 @@ JINA_CAPTION_VECTORS_DIR = project_path(
     "jina",
     "caption_embeddings_npy",
 )
+APPLE_CLIP_ARTIFACTS_DIR = project_path(
+    "AIC_APPLE_CLIP_ARTIFACTS_DIR", "embedding", "apple_finetuned"
+)
+APPLE_CLIP_CACHE_DIR = project_path(
+    "AIC_APPLE_CLIP_CACHE_DIR", ".cache", "apple_clip_vectors"
+)
+APPLE_CLIP_CHECKPOINT_PATH = project_path(
+    "AIC_APPLE_CLIP_CHECKPOINT_PATH",
+    "embedding",
+    "apple_finetuned",
+    "apple_clip_epoch_5_inference.pt",
+)
+if (
+    not os.getenv("AIC_APPLE_CLIP_CHECKPOINT_PATH")
+    and not APPLE_CLIP_CHECKPOINT_PATH.is_file()
+):
+    # Cho phép chạy ngay với checkpoint training cũ; bản inference-only được
+    # ưu tiên vì không chứa hơn 7 GB optimizer state không dùng lúc retrieval.
+    APPLE_CLIP_CHECKPOINT_PATH = APPLE_CLIP_ARTIFACTS_DIR / "epoch_5.pt"
 
 # --- 3. CLASS BM25 TỰ IMPLEMENT CỦA BẠN ---
 class BM25:
@@ -268,6 +289,33 @@ except (FileNotFoundError, ValueError) as exc:
     print(f"Caption search chưa sẵn sàng: {exc}")
 jina_text_encoder = JinaTextEncoder(device=device)
 print(f"Đã map Jina image: {jina_semantic_index.ntotal:,} vector, 1024 chiều.")
+
+apple_clip_index = None
+apple_clip_index_reason = "Apple-CLIP artifacts chưa được chuẩn bị."
+try:
+    apple_cache_dir = prepare_npz_archive_cache(
+        APPLE_CLIP_ARTIFACTS_DIR,
+        APPLE_CLIP_CACHE_DIR,
+        image_records,
+        expected_dimension=1024,
+    )
+    apple_clip_index = ShardedNpyIndex(
+        "Apple-CLIP Finetune",
+        apple_cache_dir,
+        image_records,
+        expected_dimension=1024,
+    )
+    apple_clip_index_reason = (
+        f"Đã map {apple_clip_index.ntotal:,} Apple-CLIP vectors."
+    )
+    print(apple_clip_index_reason)
+except (FileNotFoundError, ValueError, OSError, zipfile.BadZipFile) as exc:
+    apple_clip_index_reason = str(exc)
+    print(f"Apple-CLIP search chưa sẵn sàng: {exc}")
+apple_clip_text_encoder = AppleClipTextEncoder(
+    checkpoint_path=APPLE_CLIP_CHECKPOINT_PATH,
+    device=device,
+)
 
 print("Loading ASR metadata...")
 asr_data, asr_corpus_tokenized, asr_video_map = load_asr_metadata(ASR_METADATA_DIR)
@@ -459,6 +507,38 @@ def expand_query_with_groq(query_text):
         print(f"Lỗi khi mở rộng câu truy vấn bằng Groq: {e}")
         return []
 
+
+APPLE_CLIP_TRANSLATION_PROMPT = """Translate the Vietnamese visual-search query below into concise, natural English for CLIP text-to-image retrieval.
+
+Rules:
+- Preserve every visible object, person, action, color, count, spatial relation, proper name and on-screen text.
+- Do not expand, explain, infer or add details.
+- If the input is already English, return it unchanged.
+- Return only the translated query, without quotes or markdown.
+
+Query: {query}"""
+
+
+def translate_query_for_apple_clip(query_text):
+    """Return ``(query_used, translated, reason)`` for Apple-CLIP retrieval."""
+    if not groq_client:
+        return query_text, False, "Chưa dịch: thiếu GROQ_API_KEY"
+    try:
+        translated = groq_generate(
+            APPLE_CLIP_TRANSLATION_PROMPT.format(query=query_text)
+        ).strip()
+        translated = re.sub(
+            r"^```(?:text)?|```$", "", translated, flags=re.MULTILINE
+        ).strip()
+        translated = translated.strip('"').strip()
+        if not translated:
+            return query_text, False, "Chưa dịch: Groq trả kết quả rỗng"
+        print(f"[Apple-CLIP Translate] '{query_text}' -> '{translated}'")
+        return translated, translated != query_text, ""
+    except Exception as exc:
+        print(f"Lỗi dịch query Apple-CLIP: {exc}")
+        return query_text, False, "Dịch lỗi; đã dùng query gốc"
+
 # (THÊM MỚI) API /expand_query - chỉ sinh 3 biến thể để người dùng chọn, KHÔNG tự search.
 # Trước đây tick checkbox là tự động search cả 3 biến thể + gộp RRF (người dùng không biết đã tìm
 # bằng câu gì). Giờ tách riêng: bấm nút "Mở rộng" -> hiện 3 lựa chọn -> người dùng bấm chọn 1 cái ->
@@ -586,13 +666,19 @@ def asr_candidates(query_text, search_size):
 
 
 SEMANTIC_MODEL_LABELS = {
+    "apple-clip": "Apple-CLIP Finetune",
     "jina": "Jina Embeddings v5",
     "jina-hybrid": "Jina Image + Caption (RRF)",
 }
 
 
 def encode_semantic_query(query_text, semantic_model):
+    if semantic_model == "apple-clip":
+        # GPU 6-8 GB không đủ để giữ đồng thời hai encoder lớn.
+        jina_text_encoder.unload()
+        return apple_clip_text_encoder.encode(query_text)
     if semantic_model in {"jina", "jina-hybrid"}:
+        apple_clip_text_encoder.unload()
         return jina_text_encoder.encode(query_text)
     raise ValueError(
         f"semantic_model không hợp lệ: {semantic_model!r}. "
@@ -601,6 +687,10 @@ def encode_semantic_query(query_text, semantic_model):
 
 
 def search_semantic_vectors(semantic_model, query_vector, top_k):
+    if semantic_model == "apple-clip":
+        if apple_clip_index is None:
+            raise ModelUnavailableError(apple_clip_index_reason)
+        return apple_clip_index.search(query_vector, top_k)
     if semantic_model == "jina":
         return jina_semantic_index.search(query_vector, top_k)
     if semantic_model == "jina-hybrid":
@@ -632,12 +722,28 @@ def search_semantic_vectors(semantic_model, query_vector, top_k):
 @app.route('/semantic_models', methods=['GET'])
 def semantic_models_status():
     jina_available, jina_reason = jina_text_encoder.availability()
+    apple_encoder_available, apple_encoder_reason = (
+        apple_clip_text_encoder.availability()
+    )
+    apple_available = apple_encoder_available and apple_clip_index is not None
+    apple_reason = (
+        apple_clip_index_reason if apple_encoder_available else apple_encoder_reason
+    )
     caption_available = jina_available and jina_caption_index is not None
     caption_reason = (
         jina_caption_index_reason if jina_available else jina_reason
     )
     return jsonify({
         "models": {
+            "apple-clip": {
+                "label": SEMANTIC_MODEL_LABELS["apple-clip"],
+                "available": apple_available,
+                "dimension": 1024,
+                "vectors": (
+                    apple_clip_index.ntotal if apple_clip_index is not None else 0
+                ),
+                "reason": apple_reason,
+            },
             "jina": {
                 "label": SEMANTIC_MODEL_LABELS["jina"],
                 "available": jina_available,
@@ -723,9 +829,16 @@ def search():
             f"cho: '{query_text}'"
         )
 
-        # Jina nhận query tiếng Việt trực tiếp; caption tiếng Anh vẫn nằm trong
-        # cùng không gian multilingual nên không cần dịch trước khi encode.
         search_query = query_text
+        query_translated = False
+        translation_reason = ""
+        if semantic_model == "apple-clip":
+            if bool(data.get("translate_query", True)):
+                search_query, query_translated, translation_reason = (
+                    translate_query_for_apple_clip(query_text)
+                )
+            else:
+                translation_reason = "Dịch Apple-CLIP đang tắt"
 
         query_vector = encode_semantic_query(search_query, semantic_model)
 
@@ -779,6 +892,9 @@ def search():
                 "results": final_grouped_results,
                 "summary": sorted_summary,
                 "semantic_model": semantic_model,
+                "search_query": search_query,
+                "query_translated": query_translated,
+                "translation_reason": translation_reason,
             })
         else:
             final_results = results[:top_k]
@@ -786,6 +902,9 @@ def search():
                 "results": final_results,
                 "summary": sorted_summary,
                 "semantic_model": semantic_model,
+                "search_query": search_query,
+                "query_translated": query_translated,
+                "translation_reason": translation_reason,
             })
 
     except ModelUnavailableError as e:
@@ -879,6 +998,7 @@ def search_similar_image():
         # --- KẾT THÚC BƯỚC TIỀN XỬ LÝ ---
 
         # Ảnh query và toàn bộ keyframe đều dùng cùng Jina retrieval space.
+        apple_clip_text_encoder.unload()
         query_vector = jina_text_encoder.encode_image(target_image)
 
         # Dọn dẹp sau Jina inference
@@ -1124,6 +1244,7 @@ def search_trake_02():
         for i, q in enumerate(event_queries):
             print(f"  [Sự kiện {i + 1}/{n_events}] '{q}'")
 
+        apple_clip_text_encoder.unload()
         query_vectors = jina_text_encoder.encode_texts(event_queries)
         for event_index in range(n_events):
             distances, indices = search_semantic_vectors(
@@ -1262,6 +1383,7 @@ def search_trake_image():
         # Key: video_id, Value: count (for summary)
         summary_counter = collections.defaultdict(int)
         
+        apple_clip_text_encoder.unload()
         for img_index, file in enumerate(image_files):
                 # Xử lý từng ảnh
                 if file.filename == '': continue
@@ -2038,9 +2160,13 @@ PUBLIC_STATIC_FILES = {
 
 @app.route('/health', methods=['GET'])
 def health():
-    """Lightweight readiness check; does not force the lazy Jina model to load."""
+    """Readiness check without forcing either lazy semantic model to load."""
     jina_available, jina_reason = jina_text_encoder.availability()
     hybrid_available = jina_available and jina_caption_index is not None
+    apple_encoder_available, apple_encoder_reason = (
+        apple_clip_text_encoder.availability()
+    )
+    apple_available = apple_encoder_available and apple_clip_index is not None
     return jsonify({
         "status": "ok" if hybrid_available else "degraded",
         "device": device,
@@ -2049,6 +2175,14 @@ def health():
         "jina_hybrid": {
             "available": hybrid_available,
             "reason": jina_caption_index_reason if jina_available else jina_reason,
+        },
+        "apple_clip": {
+            "available": apple_available,
+            "reason": (
+                apple_clip_index_reason
+                if apple_encoder_available
+                else apple_encoder_reason
+            ),
         },
         "ocr": {"available": bm25_ocr_index is not None},
         "asr_for_fusion": {"available": bm25_asr_index is not None},

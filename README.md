@@ -1,11 +1,12 @@
-# AIC Video Retrieval — Jina-only
+# AIC Video Retrieval — Jina + Apple-CLIP Finetune
 
-Ứng dụng Flask tìm keyframe cho AIC/VBS, dùng duy nhất
-`jinaai/jina-embeddings-v5-omni-small` cho retrieval đa phương thức. Model được
-pin tại revision `05f4151c87083f204159bfa15e53fdb0320ffef1`.
+Ứng dụng Flask tìm keyframe cho AIC/VBS. Semantic retrieval hỗ trợ Jina v5 và
+Apple-CLIP `ViT-H-14-378-quickgelu` đã finetune. Jina được pin tại revision
+`05f4151c87083f204159bfa15e53fdb0320ffef1`.
 
 Các chế độ trên giao diện:
 
+- **Semantic · Apple-CLIP**: text → Apple-CLIP image vectors đã finetune.
 - **Semantic · Jina**: text → Jina image vectors.
 - **Jina · Hybrid**: gộp rank từ Jina image vectors và Jina caption vectors bằng RRF.
 - **OCR** và **ASR**: BM25 giảm length penalty, sau đó rerank theo độ phủ từ
@@ -20,6 +21,8 @@ chuột, kéo ngang, giữ nút `‹`/`›`, hoặc dùng `←`/`→` và `A`/`D
 
 Jina nhận trực tiếp cả tiếng Việt và tiếng Anh. Caption corpus hiện là tiếng Anh
 nhưng nằm trong cùng không gian multilingual, vì vậy không cần dịch query trước.
+Apple-CLIP có tùy chọn dịch sát nghĩa query sang tiếng Anh bằng Groq trước khi
+encode; tùy chọn này bật mặc định và giao diện luôn hiện câu tiếng Anh đã dùng.
 
 ## 1. Cấu trúc project hoàn chỉnh
 
@@ -31,7 +34,7 @@ Các mục `[GitHub]` được commit; các mục `[Artifact]` tải từ Drive/
 AIC2026/
 ├── app.py                                      # [GitHub] Flask backend/API
 ├── retrieval_data.py                           # [GitHub] load metadata OCR/
-├── semantic_search.py                          # [GitHub] Jina encoder và NPY search
+├── semantic_search.py                          # [GitHub] Jina/Apple-CLIP encoder và NPY search
 ├── index.html                                  # [GitHub] giao diện
 ├── script.js                                   # [GitHub] logic frontend
 ├── style.css                                   # [GitHub] CSS
@@ -61,6 +64,12 @@ AIC2026/
 │       ├── ...
 │       └── L30.npy
 │
+├── embedding/apple_finetuned/                  # [Artifact]
+│   ├── apple_clip_epoch_5_inference.pt          # checkpoint không chứa optimizer
+│   ├── L21-*.zip                                # NPZ shards + image_names
+│   ├── ...
+│   └── L30-*.zip
+│
 ├── ocr/                                        # [Artifact]
 │   ├── metadata_ocr_filtered.zip               # file tải về
 │   └── metadata_ocr_filtered/                  # folder sau khi unzip
@@ -75,7 +84,9 @@ AIC2026/
 │   └── L30_*.json
 │
 ├── yolov8n.pt                                  # [Artifact, optional] Auto-Crop
-└── .cache/huggingface/                         # [Generated] pretrained Jina cache
+└── .cache/                                     # [Generated]
+    ├── huggingface/                            # pretrained Jina cache
+    └── apple_clip_vectors/L21.npy ... L30.npy  # mmap cache dựng từ ZIP
 ```
 
 Các nguồn dùng để **tạo lại artifact**, không cần trên máy người dùng cuối:
@@ -116,6 +127,9 @@ data-root/
 ├── embedding/jina/
 │   ├── jina_embeddings_npy/L21.npy ... L30.npy
 │   └── caption_embeddings_npy/L21.npy ... L30.npy
+├── embedding/apple_finetuned/
+│   ├── apple_clip_epoch_5_inference.pt
+│   └── L21-*.zip ... L30-*.zip
 ├── ocr/
 │   ├── metadata_ocr_filtered.zip           # File vận chuyển/tải về
 │   └── metadata_ocr_filtered/              # Runtime dùng folder đã giải nén
@@ -125,9 +139,11 @@ data-root/
 └── yolov8n.pt                    # tùy chọn, chỉ cho Auto-Crop
 ```
 
-Hai bộ vector phải có cùng thứ tự row với metadata, dtype `float32`, 1024 chiều,
+Các bộ vector phải có cùng thứ tự row với metadata, 1024 chiều,
 đã L2-normalize. Tổng cộng phải có 317.961 rows. Số row từng collection nằm trong
-`artifacts-manifest.json`.
+`artifacts-manifest.json`. Apple-CLIP export dùng `float16` trong NPZ; lần khởi
+động đầu app xác minh toàn bộ `image_names`, chuyển sang cache mmap `float32` và
+những lần sau dùng lại cache đó.
 
 `metadata_ocr_filtered.zip` chứa cả metadata canonical và `ocr_text` lấy từ OCR
 original sau khi lọc ticker L21/L22. Trước khi chạy, giải nén ZIP vào
@@ -196,14 +212,19 @@ $env:AIC_OCR_METADATA_PATH = "$dataRoot\ocr\metadata_ocr_filtered"
 $env:AIC_ASR_METADATA_DIR = "$dataRoot\asr\metadata_asr_clean"
 $env:AIC_JINA_VECTORS_DIR = "$dataRoot\embedding\jina\jina_embeddings_npy"
 $env:AIC_JINA_CAPTION_VECTORS_DIR = "$dataRoot\embedding\jina\caption_embeddings_npy"
+$env:AIC_APPLE_CLIP_ARTIFACTS_DIR = "$dataRoot\embedding\apple_finetuned"
+$env:AIC_APPLE_CLIP_CHECKPOINT_PATH = "$dataRoot\embedding\apple_finetuned\apple_clip_epoch_5_inference.pt"
+$env:AIC_APPLE_CLIP_CACHE_DIR = "D:\AIC2026-cache\apple_clip_vectors"
 $env:AIC_YOLO_MODEL_PATH = "$dataRoot\yolov8n.pt"
 $env:AIC_CACHE_DIR = "D:\AIC2026-cache\huggingface"
 python app.py
 ```
 
-Mở `http://localhost:5000`. Model Jina được tải lazy ở truy vấn semantic/ảnh đầu
-tiên; lần đầu cần Internet và sẽ lâu hơn. `GROQ_API_KEY` chỉ cần cho nút Query
-Expansion, không cần cho retrieval.
+Mở `http://localhost:5000`. Jina và Apple-CLIP đều lazy-load ở truy vấn tương ứng.
+Jina cần Internet ở lần tải pretrained đầu tiên; Apple-CLIP dùng checkpoint local.
+Lần khởi động đầu sẽ dựng Apple-CLIP mmap cache từ các ZIP. `GROQ_API_KEY` dùng
+cho Query Expansion và dịch query Apple-CLIP; nếu thiếu key, Apple-CLIP vẫn chạy
+với query gốc và giao diện sẽ báo rõ chưa dịch.
 
 Kiểm tra nhanh dịch vụ:
 
@@ -221,9 +242,12 @@ Invoke-RestMethod http://localhost:5000/health
 | `AIC_ASR_METADATA_DIR` | `asr/metadata_asr_clean` |
 | `AIC_JINA_VECTORS_DIR` | `embedding/jina/jina_embeddings_npy` |
 | `AIC_JINA_CAPTION_VECTORS_DIR` | `embedding/jina/caption_embeddings_npy` |
+| `AIC_APPLE_CLIP_ARTIFACTS_DIR` | `embedding/apple_finetuned` |
+| `AIC_APPLE_CLIP_CHECKPOINT_PATH` | `embedding/apple_finetuned/apple_clip_epoch_5_inference.pt` |
+| `AIC_APPLE_CLIP_CACHE_DIR` | `.cache/apple_clip_vectors` |
 | `AIC_YOLO_MODEL_PATH` | `yolov8n.pt` |
 | `AIC_CACHE_DIR` | `.cache/huggingface` |
-| `GROQ_API_KEY` | rỗng; Query Expansion bị tắt |
+| `GROQ_API_KEY` | rỗng; Query Expansion và dịch Apple-CLIP bị tắt |
 
 ## 6. Những file nên push lên GitHub
 
@@ -248,8 +272,8 @@ Không push các folder/file sau: `keyframes/`, `embedding/`, `ocr/`,
 | Endpoint | Nội dung |
 |---|---|
 | `GET /health` | trạng thái artifact/runtime |
-| `GET /semantic_models` | trạng thái Jina và Jina Hybrid |
-| `POST /search` | `semantic_model`: `jina` hoặc `jina-hybrid` |
+| `GET /semantic_models` | trạng thái Apple-CLIP, Jina và Jina Hybrid |
+| `POST /search` | `semantic_model`: `apple-clip`, `jina` hoặc `jina-hybrid` |
 | `POST /search_ocr` | OCR BM25 |
 | `POST /search_asr` | ASR BM25 |
 | `POST /search_fusion` | `query_jina`, `query_ocr`, `query_asr` + weights |
@@ -297,6 +321,8 @@ tiếp cũ vẫn được giữ nguyên và độc lập với công cụ vòng 
 
 - **Jina Hybrid bị khóa**: thiếu hoặc sai một shard caption `L21.npy…L30.npy`;
   chạy lại `scripts/prepare_data.py` để thấy file/shape sai.
+- **Apple-CLIP bị khóa**: kiểm tra đủ checkpoint inference và 10 ZIP `L21…L30`;
+  xóa `.cache/apple_clip_vectors` rồi khởi động lại nếu artifact đã được thay mới.
 - **Model không tải được**: kiểm tra Internet, `HF_TOKEN` nếu cache/repo private,
   và quyền ghi `AIC_CACHE_DIR`.
 - **CUDA unavailable**: kiểm tra NVIDIA driver và chạy

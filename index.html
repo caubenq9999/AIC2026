@@ -59,6 +59,12 @@
                             <button type="button" id="expand-query-button">🔎 Mở rộng câu truy vấn</button>
                             <div id="query-expansion-options" class="query-expansion-options hidden"></div>
                         </div>
+                        <div id="apple-translation-box" class="query-expansion-box hidden">
+                            <label for="apple-translation-checkbox" title="Dịch sát nghĩa sang tiếng Anh trước khi encode bằng Apple-CLIP; cần GROQ_API_KEY">
+                                <input type="checkbox" id="apple-translation-checkbox" checked>
+                                Dịch query sang tiếng Anh cho Apple-CLIP
+                            </label>
+                        </div>
 
                         <!-- (THÊM MỚI) TRAKE: mỗi sự kiện một ô riêng, thêm/xóa được (thay cho việc
                              gõ tất cả vào 1 ô rồi ngăn bằng dấu ';') -->
@@ -116,7 +122,9 @@
                         </div>
                         <div class="controls">
                             <div class="search-mode-box">
-                                <input type="radio" id="mode-semantic-jina" name="search-mode" value="semantic-jina" checked>
+                                <input type="radio" id="mode-semantic-apple-clip" name="search-mode" value="semantic-apple-clip" checked>
+                                <label for="mode-semantic-apple-clip" title="Semantic search bằng Apple-CLIP ViT-H-14-378 đã finetune, vector 1024 chiều">Semantic · Apple-CLIP</label>
+                                <input type="radio" id="mode-semantic-jina" name="search-mode" value="semantic-jina">
                                 <label for="mode-semantic-jina" title="Semantic search độc lập bằng Jina Embeddings v5, vector 1024 chiều">Semantic · Jina</label>
                                 <input type="radio" id="mode-semantic-jina-hybrid" name="search-mode" value="semantic-jina-hybrid">
                                 <label for="mode-semantic-jina-hybrid" title="Gộp kết quả Jina image và Jina caption bằng Reciprocal Rank Fusion (RRF) trọng số bằng nhau">Jina · Hybrid</label>
