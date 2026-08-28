@@ -5,6 +5,8 @@
   "embedding_dimension": 1024,
   "jina_model": "jinaai/jina-embeddings-v5-omni-small",
   "jina_revision": "05f4151c87083f204159bfa15e53fdb0320ffef1",
+  "apple_clip_model": "ViT-H-14-378-quickgelu",
+  "apple_clip_checkpoint_epoch": 5,
   "ocr_metadata": {
     "records": 317961,
     "blank_texts": 17308
@@ -27,6 +29,8 @@
     "asr_metadata": "asr/metadata_asr_clean",
     "jina_image_vectors": "embedding/jina/jina_embeddings_npy",
     "jina_caption_vectors": "embedding/jina/caption_embeddings_npy",
+    "apple_clip_artifacts": "embedding/apple_finetuned",
+    "apple_clip_checkpoint": "embedding/apple_finetuned/apple_clip_epoch_5_inference.pt",
     "yolo_model": "yolov8n.pt"
   }
 }
