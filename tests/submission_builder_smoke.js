@@ -185,6 +185,21 @@ async function run() {
         Array.from(state.queries['query-3-trake'].pinned[0].frameIndices),
         [100, 200, 300],
     );
+
+    await element('clear-all-submissions').emit('click');
+    state = context.PrelimSubmission.load();
+    assert.equal(Object.keys(state.queries).length, 3, 'clearing results must preserve query definitions');
+    assert.ok(
+        Object.values(state.queries).every(query => (
+            query.pinned.length === 0 && query.automatic.length === 0 && query.pool.length === 0
+        )),
+        'clearing results must remove all pinned, automatic, and pooled candidates',
+    );
+
+    await element('clear-all-queries').emit('click');
+    state = context.PrelimSubmission.load();
+    assert.equal(Object.keys(state.queries).length, 0, 'clearing queries must reset the project');
+    assert.equal(state.activeQueryId, '');
     console.log('submission merge smoke test OK');
 }
 
