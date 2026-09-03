@@ -13,6 +13,8 @@
         importQueryFiles: document.getElementById('import-query-files'),
         queryList: document.getElementById('query-list'),
         queryCount: document.getElementById('query-count'),
+        clearAllSubmissions: document.getElementById('clear-all-submissions'),
+        clearAllQueries: document.getElementById('clear-all-queries'),
         emptyWorkspace: document.getElementById('empty-workspace'),
         queryWorkspace: document.getElementById('query-workspace'),
         activeQueryType: document.getElementById('active-query-type'),
@@ -769,6 +771,64 @@
         URL.revokeObjectURL(url);
     }
 
+    function timestampForBackup() {
+        return new Date().toISOString().replace(/[:.]/g, '-');
+    }
+
+    function closeOpenPanels() {
+        elements.csvPreviewPanel.classList.add('hidden');
+        closeFrameDetail();
+    }
+
+    function clearAllSubmissionResults() {
+        const state = PrelimSubmission.load();
+        const queries = Object.values(state.queries || {});
+        const resultCount = queries.reduce((sum, query) => (
+            sum + (query.pinned || []).length + (query.automatic || []).length
+        ), 0);
+        const pooledCount = queries.reduce((sum, query) => sum + (query.pool || []).length, 0)
+            + (state.latestPools?.frame || []).length
+            + (state.latestPools?.trake || []).length;
+
+        if (!queries.length || (!resultCount && !pooledCount)) {
+            message('Không có kết quả submission cũ để xóa.');
+            return;
+        }
+        if (!confirm(
+            `Xóa ${resultCount} dòng kết quả submission và dữ liệu ranking tạm của ${queries.length} query?\n\n`
+            + 'Tên query, nội dung truy vấn và answer vẫn được giữ lại.'
+        )) return;
+
+        downloadJson(`aic26-before-clear-results-${timestampForBackup()}.json`, state);
+        for (const query of queries) {
+            query.pinned = [];
+            query.automatic = [];
+            query.pool = [];
+        }
+        state.latestPools = { frame: [], trake: [], trakeEventCount: 0 };
+        closeOpenPanels();
+        PrelimSubmission.save(state);
+        message(`Đã xóa toàn bộ kết quả của ${queries.length} query; file backup JSON đã được tải xuống.`);
+    }
+
+    function clearAllQueries() {
+        const state = PrelimSubmission.load();
+        const queryCount = Object.keys(state.queries || {}).length;
+        if (!queryCount) {
+            message('Không có query cũ để xóa.');
+            return;
+        }
+        if (!confirm(
+            `Xóa toàn bộ ${queryCount} query cùng tất cả kết quả đã ghim/auto-fill?\n\n`
+            + 'App sẽ tự tải một file backup JSON trước khi xóa.'
+        )) return;
+
+        downloadJson(`aic26-before-clear-all-${timestampForBackup()}.json`, state);
+        closeOpenPanels();
+        PrelimSubmission.save(PrelimSubmission.emptyState());
+        message(`Đã xóa ${queryCount} query; có thể khôi phục bằng file backup JSON vừa tải.`);
+    }
+
     function parseCsv(text) {
         const rows = [];
         let row = [];
@@ -1223,6 +1283,8 @@
         saveQueryField('automatic', []);
         message('Đã xóa phần auto-fill; các dòng ghim vẫn được giữ nguyên.');
     });
+    elements.clearAllSubmissions.addEventListener('click', clearAllSubmissionResults);
+    elements.clearAllQueries.addEventListener('click', clearAllQueries);
     elements.previewCsv.addEventListener('click', () => {
         const query = activeQuery();
         if (!query) return;

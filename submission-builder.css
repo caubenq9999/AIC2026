@@ -108,8 +108,24 @@ button:hover, .file-button:hover, .secondary-link:hover { border-color: var(--ac
     justify-content: space-between;
     gap: 12px;
 }
-.query-list { display: flex; flex-direction: column; gap: 7px; margin-top: 12px; }
+.query-list {
+    display: flex;
+    flex-direction: column;
+    gap: 7px;
+    max-height: min(44vh, 520px);
+    margin-top: 12px;
+    padding-right: 3px;
+    overflow-y: auto;
+    scrollbar-width: thin;
+}
 .query-list-empty { color: var(--muted); font-size: 13px; }
+.query-list-actions {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+    gap: 7px;
+    margin-top: 10px;
+}
+.query-list-actions button { min-width: 0; padding-inline: 7px; font-size: 12px; }
 .query-item {
     display: flex;
     align-items: center;

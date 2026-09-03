@@ -4,7 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>AIC26 · Submission Builder</title>
-    <link rel="stylesheet" href="submission-builder.css?v=20260825-2">
+    <link rel="stylesheet" href="submission-builder.css?v=20260902-1">
 </head>
 <body>
     <header class="builder-header">
@@ -37,6 +37,12 @@
                     <span id="query-count">0</span>
                 </div>
                 <div id="query-list" class="query-list"></div>
+                <div class="query-list-actions">
+                    <button type="button" id="clear-all-submissions"
+                            title="Xóa toàn bộ dòng ghim và auto-fill nhưng giữ lại query">Xóa hết kết quả</button>
+                    <button type="button" id="clear-all-queries" class="danger-button"
+                            title="Xóa toàn bộ query và kết quả trong project hiện tại">Xóa hết query</button>
+                </div>
             </section>
 
             <section class="panel backup-panel">
@@ -178,6 +184,6 @@
     </div>
 
     <script src="submission-store.js?v=20260821-1"></script>
-    <script src="submission-builder.js?v=20260825-2"></script>
+    <script src="submission-builder.js?v=20260902-1"></script>
 </body>
 </html>

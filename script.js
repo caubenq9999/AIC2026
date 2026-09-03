@@ -1659,9 +1659,16 @@ document.addEventListener('DOMContentLoaded', () => {
     }
 
     // === (CẬP NHẬT) Hàm hiển thị video player ===
-    function showVideoPlayer(youtubeVideoId, startTime, videoTitle, internalVideoId) { // (THÊM MỚI) internalVideoId
+    function showVideoPlayer(youtubeVideoId, startTime, videoTitle, internalVideoId, options = {}) { // (THÊM MỚI) internalVideoId
         if (!youtubeVideoId) { console.error("Không có video ID (YouTube) để phát."); return; }
         if (!internalVideoId) { console.error("Không có ID (Internal) để tải bản đồ keyframe."); return; }
+        const wasPlaying = Boolean(
+            ytPlayer
+            && typeof ytPlayer.getPlayerState === 'function'
+            && ytPlayer.getPlayerState() === 1
+        );
+        const autoplay = options.autoplay === true
+            || (options.preservePlayback === true && wasPlaying);
 
         videoPlayerTitle.textContent = videoTitle || "Video Player";
         // [SỬA LỖI !important]
@@ -1681,11 +1688,13 @@ document.addEventListener('DOMContentLoaded', () => {
             // Chỉ tua (seek) đến thởi gian mới
             console.log("Player tồn tại, chỉ seek to:", startTime);
             ytPlayer.seekTo(startTime, true);
-            ytPlayer.playVideo(); // Đảm bảo nó phát
+            if (autoplay) ytPlayer.playVideo();
+            else ytPlayer.pauseVideo();
         } else if (ytPlayer) {
             // Nếu player đã tồn tại *nhưng* video ID khác
             console.log("Player tồn tại, tải video mới:", youtubeVideoId);
-            ytPlayer.loadVideoById({
+            const loadMethod = autoplay ? 'loadVideoById' : 'cueVideoById';
+            ytPlayer[loadMethod]({
                 videoId: youtubeVideoId, // ID YouTube
                 startSeconds: startTime
             });
@@ -1695,7 +1704,7 @@ document.addEventListener('DOMContentLoaded', () => {
             ytPlayer = new YT.Player('youtube-player', { // 'youtube-player' là ID của <div>
                 videoId: youtubeVideoId, // ID YouTube
                 playerVars: {
-                    'autoplay': 1,
+                    'autoplay': autoplay ? 1 : 0,
                     'start': startTime
                 },
                 events: {
@@ -2083,7 +2092,13 @@ document.addEventListener('DOMContentLoaded', () => {
                     const url = new URL(imgElement.watch_url);
                     const youtubeVideoId = url.searchParams.get('v');
                     const startTime = Math.floor(imgElement.start);
-                    showVideoPlayer(youtubeVideoId, startTime, imgElement.video_id, imgElement.video_id);
+                    showVideoPlayer(
+                        youtubeVideoId,
+                        startTime,
+                        imgElement.video_id,
+                        imgElement.video_id,
+                        { autoplay: true }
+                    );
                 } catch (e) { console.error("Lỗi khi xử lý URL video ASR:", e); }
             }
             return;
@@ -2093,6 +2108,7 @@ document.addEventListener('DOMContentLoaded', () => {
         if (imgElement && imgElement.classList) imgElement.classList.add("selected");
         const preserveNeighborStrip = Boolean(options.preserveNeighborStrip)
             && keyframeVideoKey(imagePath) === keyframeVideoKey(currentDetailPath);
+        const autoplayFromSearchResult = !preserveNeighborStrip && options.autoplay !== false;
         const incomingSearchContext = normalizeSearchContext(options.searchContext)
             || normalizeSearchContext(imgElement && (imgElement._searchContext || imgElement.search_context));
         if (incomingSearchContext) {
@@ -2152,7 +2168,16 @@ document.addEventListener('DOMContentLoaded', () => {
                 const videoTitle = videoId_from_path;
 
                 // (QUAN TRỌNG) Gọi hàm showVideoPlayer mới
-                showVideoPlayer(youtubeVideoId, startTime, videoTitle, videoId_from_path); // (THAY ĐỔI) Thêm videoId_from_path
+                showVideoPlayer(
+                    youtubeVideoId,
+                    startTime,
+                    videoTitle,
+                    videoId_from_path,
+                    {
+                        autoplay: options.autoplay === true || autoplayFromSearchResult,
+                        preservePlayback: options.preservePlayback === true,
+                    }
+                ); // Kết quả search tự phát; frame lân cận chỉ tua và giữ play/pause hiện tại.
             } else {
                 noVideoLinkSpan.style.display = 'inline';
                 // Nếu ảnh này không có video, tắt player (nếu đang mở)
@@ -2180,14 +2205,26 @@ document.addEventListener('DOMContentLoaded', () => {
             thumb.loading = 'lazy';
             thumb.draggable = false;
             thumb.title = `Frame ${keyframeNumber(src)}`;
-            thumb.addEventListener("click", () => navigateToNeighbor(src));
+            thumb.tabIndex = 0;
+            thumb.setAttribute('role', 'button');
+            thumb.setAttribute('aria-label', `Chuyển tới frame ${keyframeNumber(src)}`);
+            thumb.addEventListener('keydown', event => {
+                if (event.key !== 'Enter' && event.key !== ' ') return;
+                event.preventDefault();
+                navigateToNeighbor(src);
+            });
             neighborThumbnails.appendChild(thumb);
         });
         updateNeighborSelection(currentImagePath);
     }
     // navigateToNeighbor
-    function navigateToNeighbor(newImagePath) {
-        if (canonicalKeyframePath(newImagePath) === canonicalKeyframePath(currentDetailPath)) return;
+    function navigateToNeighbor(newImagePath, options = {}) {
+        if (canonicalKeyframePath(newImagePath) === canonicalKeyframePath(currentDetailPath)) {
+            if (options.autoplay && ytPlayer && typeof ytPlayer.playVideo === 'function') {
+                ytPlayer.playVideo();
+            }
+            return;
+        }
         let correspondingElement = null;
         const galleryImages = document.querySelectorAll('.gallery-item');
         // (SỬA LỖI LOGIC) So sánh đường dẫn đầy đủ
@@ -2198,7 +2235,11 @@ document.addEventListener('DOMContentLoaded', () => {
                 break;
             }
         }
-        showImageDetail(newImagePath, correspondingElement, { preserveNeighborStrip: true });
+        showImageDetail(newImagePath, correspondingElement, {
+            preserveNeighborStrip: true,
+            autoplay: options.autoplay === true,
+            preservePlayback: true,
+        });
     }
     // navigateNeighbor (phím tắt)
     function navigateNeighbor(direction) {
@@ -2245,34 +2286,44 @@ document.addEventListener('DOMContentLoaded', () => {
 
     let neighborDragStartX = 0;
     let neighborDragStartScroll = 0;
+    let neighborActivePointerId = null;
     neighborThumbnails.addEventListener('pointerdown', event => {
         if (event.button !== 0) return;
         neighborDragged = false;
+        neighborActivePointerId = event.pointerId;
         neighborDragStartX = event.clientX;
         neighborDragStartScroll = neighborThumbnails.scrollLeft;
-        neighborThumbnails.classList.add('dragging');
-        neighborThumbnails.setPointerCapture(event.pointerId);
     });
     neighborThumbnails.addEventListener('pointermove', event => {
-        if (!neighborThumbnails.hasPointerCapture(event.pointerId)) return;
+        if (event.pointerId !== neighborActivePointerId) return;
         const delta = event.clientX - neighborDragStartX;
-        if (Math.abs(delta) > 4) neighborDragged = true;
+        if (Math.abs(delta) <= 4 && !neighborDragged) return;
+        if (!neighborDragged) {
+            neighborDragged = true;
+            neighborThumbnails.classList.add('dragging');
+            neighborThumbnails.setPointerCapture(event.pointerId);
+        }
         neighborThumbnails.scrollLeft = neighborDragStartScroll - delta;
     });
     function stopNeighborDrag(event) {
+        if (event.pointerId !== neighborActivePointerId) return;
         const didDrag = neighborDragged;
         if (neighborThumbnails.hasPointerCapture(event.pointerId)) {
             neighborThumbnails.releasePointerCapture(event.pointerId);
         }
+        neighborActivePointerId = null;
         neighborThumbnails.classList.remove('dragging');
         if (didDrag) setTimeout(() => { neighborDragged = false; }, 0);
     }
     neighborThumbnails.addEventListener('pointerup', stopNeighborDrag);
     neighborThumbnails.addEventListener('pointercancel', stopNeighborDrag);
     neighborThumbnails.addEventListener('click', event => {
-        if (!neighborDragged) return;
-        event.preventDefault();
-        event.stopPropagation();
-        neighborDragged = false;
-    }, true);
+        if (neighborDragged) {
+            event.preventDefault();
+            neighborDragged = false;
+            return;
+        }
+        const thumb = event.target.closest('img[data-path]');
+        if (thumb) navigateToNeighbor(thumb.dataset.path);
+    });
 });
