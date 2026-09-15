@@ -1,6 +1,7 @@
 # --- 1. IMPORT CÁC THƯ VIỆN CẦN THIẾT ---
 import os
 from pathlib import Path
+from functools import lru_cache
 
 # Mọi đường dẫn mặc định đều neo theo vị trí app.py, không phụ thuộc cwd.
 BASE_DIR = Path(__file__).resolve().parent
@@ -33,6 +34,26 @@ def resolve_ocr_metadata_path():
             return candidate.resolve()
 
     # Keep the error emitted by load_retrieval_data deterministic and useful.
+    return candidates[0].resolve()
+
+
+def resolve_apple_clip_artifacts_dir():
+    """Accept the canonical path plus common names used when sharing artifacts."""
+    configured_path = os.getenv("AIC_APPLE_CLIP_ARTIFACTS_DIR", "").strip()
+    if configured_path:
+        return project_path("AIC_APPLE_CLIP_ARTIFACTS_DIR")
+
+    candidates = (
+        BASE_DIR / "embedding" / "apple_finetuned",
+        BASE_DIR / "embedding" / "apple_finetune",
+        BASE_DIR / "embedding" / "Apple-finetune",
+        BASE_DIR / "apple_finetuned",
+        BASE_DIR / "apple_finetune",
+        BASE_DIR / "Apple-finetune",
+    )
+    for candidate in candidates:
+        if candidate.is_dir():
+            return candidate.resolve()
     return candidates[0].resolve()
 
 
@@ -70,6 +91,7 @@ from semantic_search import (
     ShardedNpyIndex,
     prepare_npz_archive_cache,
 )
+from search_bm25 import PersistentInvertedBM25, fingerprint_paths
 from groq import Groq
 from flask_cors import CORS
 # from rank_bm25 import BM25Okapi # <-- XÓA BỎ (Không dùng thư viện nữa)
@@ -102,86 +124,29 @@ JINA_CAPTION_VECTORS_DIR = project_path(
     "jina",
     "caption_embeddings_npy",
 )
-APPLE_CLIP_ARTIFACTS_DIR = project_path(
-    "AIC_APPLE_CLIP_ARTIFACTS_DIR", "embedding", "apple_finetuned"
-)
+APPLE_CLIP_ARTIFACTS_DIR = resolve_apple_clip_artifacts_dir()
 APPLE_CLIP_CACHE_DIR = project_path(
     "AIC_APPLE_CLIP_CACHE_DIR", ".cache", "apple_clip_vectors"
 )
-APPLE_CLIP_CHECKPOINT_PATH = project_path(
-    "AIC_APPLE_CLIP_CHECKPOINT_PATH",
-    "embedding",
-    "apple_finetuned",
-    "apple_clip_epoch_5_inference.pt",
+SEARCH_INDEX_CACHE_DIR = project_path(
+    "AIC_SEARCH_INDEX_CACHE_DIR", ".cache", "search_indices"
 )
-if (
-    not os.getenv("AIC_APPLE_CLIP_CHECKPOINT_PATH")
-    and not APPLE_CLIP_CHECKPOINT_PATH.is_file()
-):
+SEMANTIC_QUERY_CACHE_SIZE = max(
+    0, int(os.getenv("AIC_SEMANTIC_QUERY_CACHE_SIZE", "256"))
+)
+SEMANTIC_RESULT_CACHE_SIZE = max(
+    0, int(os.getenv("AIC_SEMANTIC_RESULT_CACHE_SIZE", "128"))
+)
+if os.getenv("AIC_APPLE_CLIP_CHECKPOINT_PATH", "").strip():
+    APPLE_CLIP_CHECKPOINT_PATH = project_path("AIC_APPLE_CLIP_CHECKPOINT_PATH")
+else:
+    APPLE_CLIP_CHECKPOINT_PATH = (
+        APPLE_CLIP_ARTIFACTS_DIR / "apple_clip_epoch_5_inference.pt"
+    )
+if not APPLE_CLIP_CHECKPOINT_PATH.is_file():
     # Cho phép chạy ngay với checkpoint training cũ; bản inference-only được
     # ưu tiên vì không chứa hơn 7 GB optimizer state không dùng lúc retrieval.
     APPLE_CLIP_CHECKPOINT_PATH = APPLE_CLIP_ARTIFACTS_DIR / "epoch_5.pt"
-
-# --- 3. CLASS BM25 TỰ IMPLEMENT CỦA BẠN ---
-class BM25:
-    def __init__(self, corpus, k1=1.5, b=0.75):
-        self.corpus = corpus
-        self.k1 = k1
-        self.b = b
-        self.doc_len = [len(doc) for doc in corpus]
-        self.avgdl = sum(self.doc_len) / len(self.doc_len)
-        self.doc_count = len(corpus)
-        self.doc_freqs = self._calculate_doc_freqs()
-        self.idf = self._calculate_idf()
-    def _calculate_doc_freqs(self):
-        doc_freqs = {}
-        for doc in self.corpus:
-            for term in set(doc):
-                doc_freqs[term] = doc_freqs.get(term, 0) + 1
-        return doc_freqs
-    def _calculate_idf(self):
-        idf = {}
-        for term, freq in self.doc_freqs.items():
-            idf[term] = math.log((self.doc_count - freq + 0.5) / (freq + 0.5) + 1.0)
-        return idf
-    def get_scores(self, query):
-        # Giữ nguyên scoring BM25 cũ cho các nhánh khác (đặc biệt ASR).
-        scores = np.zeros(self.doc_count)
-        for term in query:
-            if term not in self.idf:
-                continue
-            term_freqs = np.fromiter(
-                (doc.count(term) for doc in self.corpus),
-                dtype=np.float64,
-                count=self.doc_count,
-            )
-            numerator = term_freqs * (self.k1 + 1)
-            denominator = term_freqs + self.k1 * (
-                1 - self.b + self.b * (np.array(self.doc_len) / self.avgdl)
-            )
-            scores += self.idf[term] * (numerator / denominator)
-        return scores
-
-    def get_scores_with_match_counts(self, query):
-        """Return BM25 scores and number of distinct query terms found per doc."""
-        scores = np.zeros(self.doc_count)
-        match_counts = np.zeros(self.doc_count, dtype=np.uint16)
-        # Repeating a word in the user's query must not multiply its weight.
-        distinct_query = list(dict.fromkeys(query))
-        for term in distinct_query:
-            if term not in self.idf:
-                continue
-            term_freqs = np.fromiter(
-                (doc.count(term) for doc in self.corpus),
-                dtype=np.float64,
-                count=self.doc_count,
-            )
-            match_counts += term_freqs > 0
-            numerator = term_freqs * (self.k1 + 1)
-            denominator = term_freqs + self.k1 * (1 - self.b + self.b * (np.array(self.doc_len) / self.avgdl))
-            scores += self.idf[term] * (numerator / denominator)
-        return scores, match_counts
-# --- KẾT THÚC CLASS BM25 ---
 
 # --- 4. CẤU HÌNH GROQ API ---
 GROQ_API_KEY = os.getenv("GROQ_API_KEY", "").strip()
@@ -318,7 +283,7 @@ apple_clip_text_encoder = AppleClipTextEncoder(
 )
 
 print("Loading ASR metadata...")
-asr_data, asr_corpus_tokenized, asr_video_map = load_asr_metadata(ASR_METADATA_DIR)
+asr_data, _, asr_video_map = load_asr_metadata(ASR_METADATA_DIR)
 print(f"Loaded {len(asr_data)} ASR segments from {len(asr_video_map)} videos.")
 
 # --- 6. XÂY DỰNG CÁC INDEX TÌM KIẾM ---
@@ -356,17 +321,25 @@ def tokenize_asr_text(text):
 print("Đang xây dựng index tìm kiếm với BM25 (cho OCR)...")
 bm25_ocr_index = None
 if ocr_data:
-    tokenized_corpus_ocr = []
-    print("Bắt đầu làm sạch dữ liệu OCR...")
-    for item in ocr_data:
-        original_text = item.get('ocr_text', '')
-        tokenized_corpus_ocr.append(tokenize_ocr_text(original_text))
-    print("Làm sạch OCR hoàn tất. Đang huấn luyện BM25...")
     # OCR của slide/bài giảng thường dài hơn caption/logo rất nhiều. b thấp
     # giúp BM25 không phạt độ dài quá tay; coverage/phrase bonus ở
     # ocr_candidates() đảm bảo khớp đủ cụm từ vẫn đứng trên khớp một từ ngắn.
-    bm25_ocr_index = BM25(tokenized_corpus_ocr, k1=1.5, b=0.20)
-    print(f"Xây dựng index BM25 (OCR) (tự implement) hoàn tất cho {len(tokenized_corpus_ocr)} văn bản.")
+    ocr_sources = [OCR_METADATA_PATH]
+    if OCR_TEXT_DIR.is_dir() and not ocr_text_is_embedded:
+        ocr_sources.append(OCR_TEXT_DIR)
+    bm25_ocr_index = PersistentInvertedBM25.load_or_build(
+        SEARCH_INDEX_CACHE_DIR,
+        "ocr",
+        len(ocr_data),
+        lambda index: tokenize_ocr_text(ocr_data[index].get("ocr_text", "")),
+        {
+            "artifacts": fingerprint_paths(ocr_sources),
+            "tokenizer": "clean-ocr-v1+unicode-word-v1",
+        },
+        k1=1.5,
+        b=0.20,
+    )
+    print(f"BM25 inverted index (OCR) sẵn sàng cho {len(ocr_data)} văn bản.")
 else:
     print("Không có dữ liệu OCR để xây dựng index BM25.")
 
@@ -377,11 +350,19 @@ bm25_asr_index = None
 if asr_data:
     # Dùng cùng tokenizer/ranking policy mới của OCR nhưng không chạy các regex
     # cleanup riêng cho logo, timestamp và website của OCR.
-    asr_corpus_tokenized = [
-        tokenize_asr_text(segment.get("text", "")) for segment in asr_data
-    ]
-    bm25_asr_index = BM25(asr_corpus_tokenized, k1=1.5, b=0.20)
-    print(f"Xây dựng index BM25 (ASR) (tự implement) hoàn tất cho {len(asr_corpus_tokenized)} văn bản.")
+    bm25_asr_index = PersistentInvertedBM25.load_or_build(
+        SEARCH_INDEX_CACHE_DIR,
+        "asr",
+        len(asr_data),
+        lambda index: tokenize_asr_text(asr_data[index].get("text", "")),
+        {
+            "artifacts": fingerprint_paths([ASR_METADATA_DIR]),
+            "tokenizer": "lowercase+unicode-word-v1",
+        },
+        k1=1.5,
+        b=0.20,
+    )
+    print(f"BM25 inverted index (ASR) sẵn sàng cho {len(asr_data)} văn bản.")
 else:
     print("Không có dữ liệu ASR để xây dựng index BM25.")
 
@@ -572,18 +553,22 @@ def reciprocal_rank_fusion(ranked_id_lists, k=60, weights=None):
 # === (KẾT THÚC) QUERY EXPANSION ===
 
 # === (CẬP NHẬT) OCR/ASR: bỏ hẳn Elasticsearch, dùng thẳng BM25 tự viết (đã build sẵn lúc khởi động) ===
-def coverage_phrase_bm25_scores(bm25_index, corpus, tokenized_query, search_size):
+def coverage_phrase_bm25_scores(
+    bm25_index, tokens_for_document, tokenized_query, search_size
+):
     """BM25 scores with length-independent term coverage and exact phrase bonus."""
     tokenized_query = list(dict.fromkeys(tokenized_query))
     if not tokenized_query:
         return None
 
     scores, match_counts = bm25_index.get_scores_with_match_counts(tokenized_query)
-    known_query_terms = [term for term in tokenized_query if term in bm25_index.idf]
+    known_query_terms = [
+        term for term in tokenized_query if bm25_index.has_term(term)
+    ]
     if not known_query_terms:
         return None
 
-    query_weight = sum(bm25_index.idf[term] for term in known_query_terms)
+    query_weight = sum(bm25_index.idf_for(term) for term in known_query_terms)
     coverage = match_counts.astype(np.float64) / len(known_query_terms)
     scores += query_weight * np.square(coverage)
 
@@ -600,7 +585,7 @@ def coverage_phrase_bm25_scores(bm25_index, corpus, tokenized_query, search_size
         phrase_length = len(tokenized_query)
         phrase_bonus = query_weight * 1.5
         for index in rerank_indices:
-            document = corpus[int(index)]
+            document = tokens_for_document(int(index))
             if any(
                 document[start:start + phrase_length] == tokenized_query
                 for start in range(len(document) - phrase_length + 1)
@@ -615,7 +600,7 @@ def ocr_candidates(query_text, search_size):
         return []
     scores = coverage_phrase_bm25_scores(
         bm25_ocr_index,
-        tokenized_corpus_ocr,
+        lambda index: tokenize_ocr_text(ocr_data[index].get("ocr_text", "")),
         tokenize_ocr_text(query_text),
         search_size,
     )
@@ -641,7 +626,7 @@ def asr_candidates(query_text, search_size):
         return []
     scores = coverage_phrase_bm25_scores(
         bm25_asr_index,
-        asr_corpus_tokenized,
+        lambda index: tokenize_asr_text(asr_data[index].get("text", "")),
         tokenize_asr_text(query_text),
         search_size,
     )
@@ -672,18 +657,36 @@ SEMANTIC_MODEL_LABELS = {
 }
 
 
-def encode_semantic_query(query_text, semantic_model):
+def _encode_semantic_query_uncached(query_text, semantic_model):
     if semantic_model == "apple-clip":
         # GPU 6-8 GB không đủ để giữ đồng thời hai encoder lớn.
-        jina_text_encoder.unload()
+        if jina_text_encoder.is_loaded:
+            jina_text_encoder.unload()
         return apple_clip_text_encoder.encode(query_text)
     if semantic_model in {"jina", "jina-hybrid"}:
-        apple_clip_text_encoder.unload()
+        if apple_clip_text_encoder.is_loaded:
+            apple_clip_text_encoder.unload()
         return jina_text_encoder.encode(query_text)
     raise ValueError(
         f"semantic_model không hợp lệ: {semantic_model!r}. "
         f"Chọn một trong {sorted(SEMANTIC_MODEL_LABELS)}."
     )
+
+
+@lru_cache(maxsize=SEMANTIC_QUERY_CACHE_SIZE)
+def _cached_semantic_query_vector(query_text, semantic_model):
+    vector = np.asarray(
+        _encode_semantic_query_uncached(query_text, semantic_model),
+        dtype=np.float32,
+    ).copy()
+    vector.setflags(write=False)
+    return vector
+
+
+def encode_semantic_query(query_text, semantic_model):
+    """Encode a text query with a bounded in-process LRU cache."""
+    # Return a copy so downstream code cannot corrupt the cached vector.
+    return _cached_semantic_query_vector(query_text, semantic_model).copy()
 
 
 def search_semantic_vectors(semantic_model, query_vector, top_k):
@@ -717,6 +720,27 @@ def search_semantic_vectors(semantic_model, query_vector, top_k):
             np.asarray([[index_id for index_id, _ in fused]], dtype=np.int64),
         )
     raise ValueError(f"semantic_model không hợp lệ: {semantic_model!r}")
+
+
+@lru_cache(maxsize=SEMANTIC_RESULT_CACHE_SIZE)
+def _cached_semantic_text_search(query_text, semantic_model, top_k):
+    vector = _cached_semantic_query_vector(query_text, semantic_model)
+    distances, indices = search_semantic_vectors(
+        semantic_model, vector, int(top_k)
+    )
+    distances = np.asarray(distances).copy()
+    indices = np.asarray(indices).copy()
+    distances.setflags(write=False)
+    indices.setflags(write=False)
+    return distances, indices
+
+
+def search_semantic_text(query_text, semantic_model, top_k):
+    """Encode and search while caching repeated query/model/top-k requests."""
+    distances, indices = _cached_semantic_text_search(
+        str(query_text), str(semantic_model), int(top_k)
+    )
+    return distances.copy(), indices.copy()
 
 
 @app.route('/semantic_models', methods=['GET'])
@@ -840,12 +864,12 @@ def search():
             else:
                 translation_reason = "Dịch Apple-CLIP đang tắt"
 
-        query_vector = encode_semantic_query(search_query, semantic_model)
-
         pool_k = top_k * 5 if group_results else top_k
 
         semantic_score_by_idx = {}
-        distances, indices = search_semantic_vectors(semantic_model, query_vector, pool_k)
+        distances, indices = search_semantic_text(
+            search_query, semantic_model, pool_k
+        )
         ordered_indices = [int(i) for i in indices[0] if int(i) >= 0]
         for i, dist in zip(indices[0], distances[0]):
             if int(i) >= 0:
@@ -998,7 +1022,8 @@ def search_similar_image():
         # --- KẾT THÚC BƯỚC TIỀN XỬ LÝ ---
 
         # Ảnh query và toàn bộ keyframe đều dùng cùng Jina retrieval space.
-        apple_clip_text_encoder.unload()
+        if apple_clip_text_encoder.is_loaded:
+            apple_clip_text_encoder.unload()
         query_vector = jina_text_encoder.encode_image(target_image)
 
         # Dọn dẹp sau Jina inference
@@ -1244,7 +1269,8 @@ def search_trake_02():
         for i, q in enumerate(event_queries):
             print(f"  [Sự kiện {i + 1}/{n_events}] '{q}'")
 
-        apple_clip_text_encoder.unload()
+        if apple_clip_text_encoder.is_loaded:
+            apple_clip_text_encoder.unload()
         query_vectors = jina_text_encoder.encode_texts(event_queries)
         for event_index in range(n_events):
             distances, indices = search_semantic_vectors(
@@ -1383,7 +1409,8 @@ def search_trake_image():
         # Key: video_id, Value: count (for summary)
         summary_counter = collections.defaultdict(int)
         
-        apple_clip_text_encoder.unload()
+        if apple_clip_text_encoder.is_loaded:
+            apple_clip_text_encoder.unload()
         for img_index, file in enumerate(image_files):
                 # Xử lý từng ảnh
                 if file.filename == '': continue
@@ -1582,8 +1609,9 @@ def search_fusion():
         # --- 1. Nhánh Jina Hybrid (Jina image + Jina caption) ---
         if query_jina:
             try:
-                query_vector = encode_semantic_query(query_jina, "jina-hybrid")
-                _, indices = search_semantic_vectors("jina-hybrid", query_vector, pool_k)
+                _, indices = search_semantic_text(
+                    query_jina, "jina-hybrid", pool_k
+                )
                 for i in indices[0]:
                     i = int(i)
                     if i < 0:

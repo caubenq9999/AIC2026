@@ -182,10 +182,29 @@ def prepare_npz_archive_cache(
             source_paths[collection] = path
     # Nếu tồn tại cả ZIP và folder đã giải nén, ưu tiên folder để khỏi giải nén
     # từng NPZ vào RAM ở mỗi lần dựng lại cache.
+    extracted_paths: dict[str, Path] = {}
     for path in archive_dir.iterdir():
-        collection = path.name.upper()
-        if path.is_dir() and collection.startswith("L") and collection[1:].isdigit():
-            source_paths[collection] = path
+        collection = path.name.split("-", 1)[0].upper()
+        if not (
+            path.is_dir()
+            and collection.startswith("L")
+            and collection[1:].isdigit()
+        ):
+            continue
+        current = extracted_paths.get(collection)
+        if current is not None:
+            current_is_exact = current.name.upper() == collection
+            candidate_is_exact = path.name.upper() == collection
+            if candidate_is_exact and not current_is_exact:
+                extracted_paths[collection] = path
+            elif not current_is_exact and not candidate_is_exact:
+                raise ValueError(
+                    f"Trùng folder Apple-CLIP cho {collection}: "
+                    f"{current.name}, {path.name}."
+                )
+        else:
+            extracted_paths[collection] = path
+    source_paths.update(extracted_paths)
 
     expected_by_collection: dict[str, list[str]] = {}
     for record in image_records:
@@ -432,13 +451,22 @@ class AppleClipTextEncoder:
                 vector = torch.nn.functional.normalize(vector.float(), p=2, dim=-1)
         return normalize_query_vector(vector.cpu().numpy(), self.dimension)
 
+    @property
+    def is_loaded(self) -> bool:
+        return self._model is not None
+
     def unload(self):
+        # gc.collect()/empty_cache() are surprisingly expensive even when no
+        # model exists.  Only pay that cost after a real model transition.
         with self._inference_lock, self._load_lock:
+            if self._model is None:
+                return False
             self._model = None
             self._tokenizer = None
         gc.collect()
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
+        return True
 
 
 class JinaEncoder:
@@ -534,12 +562,19 @@ class JinaEncoder:
     def encode_image(self, image) -> np.ndarray:
         return normalize_query_vector(self._encode_queries(image), self.dimension)
 
+    @property
+    def is_loaded(self) -> bool:
+        return self._model is not None
+
     def unload(self):
         with self._inference_lock, self._load_lock:
+            if self._model is None:
+                return False
             self._model = None
         gc.collect()
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
+        return True
 
 
 # Kept so the offline caption encoder does not need a migration.
