@@ -66,9 +66,6 @@ os.environ["TRANSFORMERS_CACHE"] = str(CACHE_DIR)
 os.environ["TORCH_HOME"] = str(CACHE_DIR)
 os.environ["YOLO_CONFIG_DIR"] = str(CACHE_DIR)
 
-#BTC_EVALUATION_ID = "dda49193-bcb6-4e7d-880f-bf7ec60046ee"
-#BTC_SESSION_ID = "tlMIiLdLV-yTB_ENJx6gDtimFMNYL5qk"
-BTC_API_BASE_URL = "https://eventretrieval.oj.io.vn"
 import torch
 import requests
 import numpy as np
@@ -77,6 +74,7 @@ import csv
 import zipfile
 # pyrefly: ignore [missing-import]
 from flask import Flask, request, jsonify, send_from_directory, send_file, g, abort
+from dres_gateway import check_evaluations, submit_answer as submit_to_dres
 import gc
 from retrieval_data import (
     load_asr_metadata,
@@ -1772,83 +1770,32 @@ def get_keyframe_map():
         print(f"Lỗi khi lấy bản đồ keyframe: {e}")
         return jsonify({"error": str(e)}), 500
 
-# (CẬP NHẬT) API MỚI ĐỂ NHẬN CÂU TRẢ LỜI
-# (THAY THẾ TOÀN BỘ HÀM CŨ BẰNG HÀM NÀY)
+@app.route('/dres/status', methods=['POST'])
+def dres_status():
+    """Read-only connectivity/evaluation check; never sends an answer."""
+    payload = request.get_json(silent=True) or {}
+    if not isinstance(payload, dict):
+        return jsonify({"status": "error", "message": "JSON request phải là object."}), 400
+    result = check_evaluations(
+        str(payload.get('session_id') or '').strip(),
+        str(payload.get('evaluation_id') or '').strip(),
+    )
+    return jsonify(result), (200 if result['status'] == 'ok' else 400)
+
+
 @app.route('/submit_answer', methods=['POST'])
 def submit_answer():
-    try:
-        # 1. (THAY ĐỔI) Lấy wrapper JSON
-        wrapper_data = request.get_json()
-        if not wrapper_data:
-            raise ValueError("Không nhận được dữ liệu JSON.")
-
-        # 2. (THAY ĐỔI) Tách các ID và payload
-        evaluation_id = wrapper_data.get('evaluation_id')
-        session_id = wrapper_data.get('session_id')
-        answer_payload = wrapper_data.get('answer_payload') # Đây là một dict
-
-        if not evaluation_id or not session_id or not answer_payload:
-            raise ValueError("Thiếu evaluation_id, session_id, hoặc answer_payload trong request.")
-
-        # 3. In ra màn hình (Gói hàng nhận được)
-        print("--- NHẬN ĐƯỢC GÓI HÀNG TỪ JAVASCRIPT ---")
-        print(json.dumps(wrapper_data, indent=2, ensure_ascii=False))
-        print("------------------------------------------")
-
-        # 4. (THAY ĐỔI) Tạo URL của BTC với ID động
-        if not BTC_API_BASE_URL:
-            raise ValueError("Biến BTC_API_BASE_URL chưa được thiết lập.")
-
-        btc_url = f"{BTC_API_BASE_URL}/api/v2/submit/{evaluation_id}?session={session_id}"
-
-        print(f"--- ĐANG CHUYỂN TIẾP ĐẾN API CỦA BTC ---")
-        print(f"URL: {btc_url}")
-
-        # 5. (THAY ĐỔI) Chuyển đổi payload câu trả lời (dict) thành chuỗi JSON
-        # Đây là chuỗi JSON gốc (QA/KIS/TRAKE) mà BTC cần
-        answer_string = json.dumps(answer_payload)
-
-        print(f"Payload gửi đi: {answer_string}")
-
-        # 6. Gửi gói hàng (answer_string) đến BTC
-        response = requests.post(
-            btc_url,
-            data=answer_string, # Gửi chuỗi JSON của *câu trả lời*
-            headers={ 'Content-Type': 'application/json' }
-        )
-
-        response.raise_for_status() # Báo lỗi nếu BTC trả 4xx/5xx
-
-        response_text = response.text
-        print(f"--- BTC TRẢ VỀ THÀNH CÔNG ---: {response_text}")
-
-        # 7. Trả kết quả thành công về cho Javascript
-        return jsonify({
-            "status": "success", 
-            "message": "Đã gửi thành công đến BTC.",
-            "btc_response": response_text 
-        })
-
-    except requests.exceptions.HTTPError as http_err:
-        # Lỗi từ server BTC
-        response_text = ""
-        try:
-            # Cố gắng đọc lỗi JSON từ BTC
-            response_text = http_err.response.text
-        except Exception:
-            response_text = "Không thể đọc phản hồi lỗi từ BTC."
-
-        print(f"Lỗi HTTP từ BTC: {http_err.response.status_code}\n{response_text}")
-        return jsonify({
-            "status": "error", 
-            "message": f"Lỗi từ server BTC ({http_err.response.status_code})",
-            "btc_response": response_text
-        }), 500
-
-    except Exception as e:
-        # Lỗi chung (ví dụ: thiếu ID,...)
-        print(f"Lỗi khi xử lý /submit_answer: {e}")
-        return jsonify({"status": "error", "message": str(e), "btc_response": None}), 500
+    payload = request.get_json(silent=True) or {}
+    if not isinstance(payload, dict):
+        return jsonify({"status": "rejected", "message": "JSON request phải là object."}), 400
+    result = submit_to_dres(
+        str(payload.get('session_id') or '').strip(),
+        str(payload.get('evaluation_id') or '').strip(),
+        payload.get('answer_payload'),
+    )
+    # A transport failure after POST is uncertain; the browser must not auto-retry.
+    http_status = 200 if result['status'] == 'accepted' else (409 if result['status'] == 'unknown' else 400)
+    return jsonify(result), http_status
 
 
 # --- VÒNG SƠ TUYỂN AIC26: resolve frame thật và xuất submission.zip ---

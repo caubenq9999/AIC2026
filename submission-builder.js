@@ -4,6 +4,20 @@
     const API_BASE_URL = window.location.protocol === 'file:'
         ? 'http://localhost:5000'
         : window.location.origin;
+    const themeToggle = document.getElementById('builder-theme-toggle');
+    function syncThemeButton() {
+        const dark = document.documentElement.dataset.theme === 'dark';
+        themeToggle.textContent = dark ? '☀️ Sáng' : '🌙 Tối';
+        themeToggle.setAttribute('aria-pressed', String(dark));
+        themeToggle.setAttribute('aria-label', dark ? 'Chuyển sang giao diện sáng' : 'Chuyển sang giao diện tối');
+    }
+    syncThemeButton();
+    themeToggle.addEventListener('click', () => {
+        const dark = document.documentElement.dataset.theme !== 'dark';
+        document.documentElement.dataset.theme = dark ? 'dark' : 'light';
+        try { localStorage.setItem('mfusion-theme', dark ? 'dark' : 'light'); } catch (_) { /* private mode */ }
+        syncThemeButton();
+    });
 
     const elements = {
         newQueryId: document.getElementById('new-query-id'),

@@ -4,7 +4,8 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>AIC26 · Submission Builder</title>
-    <link rel="stylesheet" href="submission-builder.css?v=20260902-1">
+    <script>try { document.documentElement.dataset.theme = localStorage.getItem('mfusion-theme') === 'dark' ? 'dark' : 'light'; } catch (_) { document.documentElement.dataset.theme = 'light'; }</script>
+    <link rel="stylesheet" href="submission-builder.css?v=20260923-1">
 </head>
 <body>
     <header class="builder-header">
@@ -13,7 +14,10 @@
             <h1>Submission Builder · Vòng sơ tuyển</h1>
             <p>Ghim mốc chắc chắn lên đầu, sau đó fill các frame cùng video quanh timestamp đó.</p>
         </div>
-        <button type="button" id="export-zip" class="primary-button">Tải submission.zip</button>
+        <div class="builder-header-actions">
+            <button type="button" id="builder-theme-toggle" aria-label="Chuyển sang giao diện tối" aria-pressed="false">🌙 Tối</button>
+            <button type="button" id="export-zip" class="primary-button">Tải submission.zip</button>
+        </div>
     </header>
 
     <main class="builder-layout">
@@ -184,6 +188,6 @@
     </div>
 
     <script src="submission-store.js?v=20260821-1"></script>
-    <script src="submission-builder.js?v=20260902-1"></script>
+    <script src="submission-builder.js?v=20260923-1"></script>
 </body>
 </html>

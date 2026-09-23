@@ -74,6 +74,7 @@ const context = {
     },
     document: {
         body: new FakeElement('body'),
+        documentElement: new FakeElement('html'),
         getElementById: element,
         createElement: () => new FakeElement(),
         addEventListener() {},

@@ -16,13 +16,24 @@ Các chế độ trên giao diện:
 - **TRAKE text**: Jina Hybrid retrieval rồi temporal alignment theo thứ tự sự kiện.
 - **Tìm giao ảnh**: nhiều ảnh → Jina image retrieval rồi giao trong cửa sổ frame.
 
-Trong thẻ chi tiết ảnh, dải frame lân cận tải theo cửa sổ ±15 frame. Có thể lăn
-chuột, kéo ngang, giữ nút `‹`/`›`, hoặc dùng `←`/`→` và `A`/`D` để duyệt nhanh.
+Thanh công cụ ở đầu trang giữ cố định khi cuộn: chọn loại câu hỏi **KIS / QA /
+TRAKE** (mặc định KIS), phương thức tìm kiếm, số kết quả và tùy chọn nhóm theo
+video. Lựa chọn loại câu hỏi được giữ khi chuyển giữa các frame; sau khi gửi,
+dữ liệu đang nhập được giữ để đối chiếu phản hồi. Nút **Sáng/Tối** trong header
+lưu lựa chọn giao diện trên trình duyệt. Trong thẻ chi tiết ảnh, Video, Giây và
+`frame_idx` nằm cùng một hàng. Dải frame lân cận
+tải theo cửa sổ ±15 frame, dùng thumbnail lớn hơn; có thể lăn chuột, kéo ngang,
+giữ nút `‹`/`›`, hoặc dùng `←`/`→` và `A`/`D` để duyệt nhanh.
+
+Trong các chế độ Semantic, nhấn **Enter** trong ô truy vấn sẽ tìm câu gốc và
+đồng thời yêu cầu gợi ý mở rộng; chọn một gợi ý để tìm lại. **Shift+Enter**
+vẫn xuống dòng. Nút **Mở rộng (Enter)** cho phép lấy gợi ý thủ công.
 
 Jina nhận trực tiếp cả tiếng Việt và tiếng Anh. Caption corpus hiện là tiếng Anh
 nhưng nằm trong cùng không gian multilingual, vì vậy không cần dịch query trước.
 Apple-CLIP có tùy chọn dịch sát nghĩa query sang tiếng Anh bằng Groq trước khi
-encode; tùy chọn này bật mặc định và giao diện luôn hiện câu tiếng Anh đã dùng.
+encode; tùy chọn này bật mặc định và nằm ngay dưới ô truy vấn. Giao diện hiện
+câu tiếng Anh đã dùng.
 
 ## 1. Cấu trúc project hoàn chỉnh
 
@@ -227,6 +238,19 @@ Lần khởi động đầu sẽ dựng Apple-CLIP mmap cache từ các ZIP. `GR
 cho Query Expansion và dịch query Apple-CLIP; nếu thiếu key, Apple-CLIP vẫn chạy
 với query gốc và giao diện sẽ báo rõ chưa dịch.
 
+Nộp trực tiếp vòng chung kết dùng DRES v2. Trước giờ thi, xác nhận địa chỉ DRES
+do BTC cung cấp; cấu hình bằng biến môi trường `BTC_API_BASE_URL` nếu khác mặc
+định `https://eventretrieval.oj.io.vn`. Ví dụ trong PowerShell, trước khi chạy app:
+
+```powershell
+$env:BTC_API_BASE_URL = "https://DRES_HOST_DO_BTC_CUNG_CAP"
+```
+
+Không đưa `sessionID` vào code hoặc Git. Nhập sessionID vào ô được che trên UI,
+nhập evaluationID rồi bấm **Kiểm tra DRES**. Nút này chỉ gọi API đọc danh sách
+evaluation; nếu chỉ có một evaluation ACTIVE, UI tự điền ID. Không có bài nộp
+nào được gửi khi kiểm tra. SessionID không được lưu vào `localStorage`.
+
 Kiểm tra nhanh dịch vụ:
 
 ```powershell
@@ -249,20 +273,32 @@ Invoke-RestMethod http://localhost:5000/health
 | `AIC_YOLO_MODEL_PATH` | `yolov8n.pt` |
 | `AIC_CACHE_DIR` | `.cache/huggingface` |
 | `GROQ_API_KEY` | rỗng; Query Expansion và dịch Apple-CLIP bị tắt |
+| `BTC_API_BASE_URL` | `https://eventretrieval.oj.io.vn`; cần xác nhận host thật với BTC |
 
-## 6. Những file nên push lên GitHub
+## 6. Đưa cập nhật UI/DRES lên GitHub
 
-Không dùng `git add .` trong workspace hiện tại vì đang chứa artifact lớn. Chỉ add
-whitelist code sau:
+Không dùng `git add .` trong workspace chứa artifact lớn. Với bản cập nhật này,
+chỉ đưa đúng các file code/tài liệu đã thay đổi vào commit. Chạy trong PowerShell
+tại thư mục repo:
 
 ```powershell
-git add app.py retrieval_data.py semantic_search.py `
-  index.html script.js style.css logo_wud.jpg `
-  requirements.txt .gitignore artifacts-manifest.json `
-  scripts/prepare_data.py scripts/build_filtered_ocr_metadata.py README.md
-git add -u -- test_reranker.py
-git status --short
+Set-Location -LiteralPath 'D:\AIC2026'
+git fetch origin
+git status --short --branch
+git add -- README.md app.py dres_gateway.py index.html script.js style.css `
+  submission-builder.css submission-builder.html submission-builder.js `
+  tests/submission_builder_smoke.js tests/test_dres_gateway.py
+git diff --cached --stat
+git diff --cached --check
+git commit -m "Improve final-round submission UI and DRES handling"
+git push origin main
 ```
+
+Trước `git commit`, có thể dùng `git diff --cached --name-only` để kiểm tra danh
+sách file. Nếu `git status` báo `behind` sau khi fetch, cần đồng bộ thay đổi từ
+remote trước khi push; không dùng `git push --force`. Nếu cần đẩy lên repo của
+người khác, tài khoản phải có quyền ghi; nếu không, tạo fork/PR theo quy trình
+của nhóm. Tuyệt đối không commit `sessionID`, `GROQ_API_KEY` hoặc file `.env`.
 
 Không push các folder/file sau: `keyframes/`, `embedding/`, `ocr/`,
 `OCR_original_no_LLM/`, `asr/`, `Captions/`, `.cache/`, `.venv/`, `*.npy`,
@@ -281,10 +317,13 @@ Không push các folder/file sau: `keyframes/`, `embedding/`, `ocr/`,
 | `POST /search_similar_image` | một ảnh multipart |
 | `POST /search_trake_02` | mảng `events` theo thứ tự |
 | `POST /search_trake_image` | ít nhất hai ảnh multipart |
+| `POST /get_keyframe_map` | bản đồ thời gian, `frame_idx`, đường dẫn keyframe và FPS theo video |
 | `POST /submission/resolve_candidates` | map keyframe sang `frame_idx` thật |
 | `POST /submission/neighbors` | lấy frame cùng video trong biên thời gian quanh các mốc ghim |
 | `POST /submission/playback` | tìm timestamp video gần `frame_idx` để kiểm tra |
 | `POST /submission/export` | validate và tạo `submission.zip` |
+| `POST /dres/status` | kiểm tra session và evaluation ACTIVE qua DRES; không gửi bài |
+| `POST /submit_answer` | gửi một đáp án DRES v2 và trả trạng thái đã nhận/từ chối/chưa rõ |
 
 ## 8. Tạo file nộp vòng sơ tuyển AIC26
 
@@ -293,9 +332,11 @@ Sau khi chạy app, mở `http://localhost:5000/submission-builder` hoặc bấm
 
 1. Tạo/import các query có tên kết thúc bằng `-kis`, `-qa` hoặc `-trake`.
 2. Chọn query đang làm trên header trang search.
-3. Mở video, tua/phát tới đúng timestamp rồi bấm **📌 Ghim timestamp đang phát**;
-   frame index được tính từ timestamp YouTube, còn dải keyframe tự chạy theo video.
-   Với TRAKE, ghim cả chuỗi.
+3. Mở video YouTube để quan sát và tua/phát tới vị trí cần tìm. Dải keyframe
+   đi theo thời gian phát; bấm **📌 Ghim timestamp đang phát** để ghim keyframe
+   gần nhất trên bản đồ metadata của video. Ghim `frame_idx` của keyframe local,
+   **không** lấy thời gian YouTube nhân FPS để tạo `frame_idx`. Với TRAKE, ghim
+   cả chuỗi từ kết quả TRAKE thay vì ghim một frame đơn.
 4. Trong Submission Builder, kéo tay cầm `⠿` để sắp xếp các dòng ghim, chọn biên thời gian rồi bấm **Fill quanh các frame
    ghim**, hoặc dùng **◎ Fill quanh** tại một dòng cụ thể. Auto-fill chỉ lấy frame
    cùng video trong khoảng thời gian đó, không dùng top-K image search.
@@ -306,6 +347,30 @@ Sau khi chạy app, mở `http://localhost:5000/submission-builder` hoặc bấm
 7. Bấm **Tải submission.zip**. Backend kiểm tra `frame_idx`, số event TRAKE,
    answer QA và tạo đúng cấu trúc `submission/*.csv` không có header.
 
+Khi dùng bảng **Nộp Đáp Án** để gửi trực tiếp, YouTube vẫn phục vụ xem/tua video
+và định vị keyframe lân cận. Mốc dùng để nộp lấy từ keyframe gần nhất trong
+metadata local: **KIS** dùng `pts_time` của hai lần **Click (Set Start/End)**;
+**QA** dùng `pts_time` của keyframe tại lúc gửi; **TRAKE** dùng `frame_idx` của
+keyframe khi bấm **Click (Add Frame)**. Có thể nhập thời gian KIS hoặc
+`frame_idx` TRAKE thủ công khi cần. Thời gian local ưu tiên `pts_time` trong
+metadata; chỉ dùng `frame_idx / fps` khi thiếu mốc thời gian hợp lệ. Nếu bản đồ
+keyframe chưa tải được, thao tác chọn keyframe để nộp sẽ báo lỗi thay vì suy
+`frame_idx` từ đồng hồ YouTube. Ở phía giao diện, KIS chấp nhận `Start = End`
+cho một mốc thời gian duy nhất; chỉ từ chối khi `End < Start`. Cần xác nhận
+máy chủ DRES của BTC chấp nhận khoảng thời gian bằng 0 trước khi dùng trong thi.
+
+Trước khi nộp trực tiếp, thẻ bên phải hiện video ID, nội dung đáp án và thumbnail
+keyframe local để kiểm tra nhanh. Bấm **Nộp đáp án** hoặc **Ctrl+Enter** khi đang
+đặt con trỏ trong bảng nộp; hệ thống khóa nút trong lúc gửi và không tự gửi lại
+khi mất kết nối. Phản hồi **DRES đã nhận** khác với phán quyết **ĐÚNG/SAI**:
+HTTP 202 có thể chưa có phán quyết. Nếu
+hiện **Chưa rõ DRES đã nhận**, kiểm tra trên DRES trước khi thử lại cùng đáp án.
+UI cảnh báo khi gửi lại cùng payload trong cùng phiên làm việc.
+
+Việc chọn keyframe hiện dựa trên mốc thời gian gần nhất trong bản đồ metadata,
+không so khớp nội dung hình ảnh. Nếu bản YouTube và video local bị lệch timeline,
+hãy đối chiếu ảnh keyframe và thời gian local trước khi gửi đáp án.
+
 Có thể dùng **Merge nguyên folder submission CSV** trong mục **Dự phòng** để nhập
 trực tiếp một folder chứa các file `*-kis.csv`, `*-qa.csv`, `*-trake.csv`. Các dòng
 được đưa vào phần ghim theo thứ tự, dữ liệu local được ưu tiên và app tải backup JSON
@@ -315,8 +380,8 @@ Bản nháp được lưu trong `localStorage` của trình duyệt. Dùng **Xu�
 JSON** để sao lưu hoặc gửi cho teammate. Máy tổng hợp dùng **Merge project JSON
 từ teammate**: app tự tải backup bản local trước, giữ thứ tự ghim local ở đầu,
 nối các lựa chọn của teammate sau và loại dòng trùng. Nếu prompt/answer hoặc số
-event xung đột, dữ liệu local được giữ và app báo số conflict. Luồng submit trực
-tiếp cũ vẫn được giữ nguyên và độc lập với công cụ vòng sơ tuyển này.
+event xung đột, dữ liệu local được giữ và app báo số conflict. Luồng nộp trực
+tiếp DRES độc lập với công cụ vòng sơ tuyển này.
 
 ## 9. Lỗi thường gặp
 
