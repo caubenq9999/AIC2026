@@ -32,12 +32,13 @@ def canonical_or_legacy_path(environment_variable, canonical_parts, legacy_parts
 
 
 def resolve_ocr_metadata_path():
-    """Resolve OCR metadata from an override, directory, or legacy ZIP archive."""
+    """Resolve frame metadata with embedded OCR from canonical or legacy paths."""
     configured_path = os.getenv("AIC_OCR_METADATA_PATH", "").strip()
     if configured_path:
         return project_path("AIC_OCR_METADATA_PATH")
 
     candidates = (
+        ARTIFACTS_DIR / "metadata" / "frames",
         ARTIFACTS_DIR / "metadata",
         BASE_DIR / "ocr" / "metadata_ocr_filtered",
         BASE_DIR / "ocr" / "metadata_ocr_filtered.zip",
@@ -113,23 +114,33 @@ OCR_TEXT_DIR = project_path(
     "AIC_OCR_TEXT_DIR", "OCR_original_no_LLM", "OCR"
 )
 ASR_METADATA_DIR = canonical_or_legacy_path(
-    "AIC_ASR_METADATA_DIR", ("asr",), ("asr", "metadata_asr_clean")
+    "AIC_ASR_METADATA_DIR", ("metadata", "asr"), ("asr", "metadata_asr_clean")
 )
 YOLO_MODEL_PATH = project_path("AIC_YOLO_MODEL_PATH", "yolov8n.pt")
-COLLECTIONS_DIR = canonical_or_legacy_path(
-    "AIC_COLLECTIONS_DIR", ("collections",), ("captionbatch2_emb",)
-)
+
+
+def resolve_unified_jina_root():
+    """Return the standardized Jina root, or None while using legacy paths."""
+    if os.getenv("AIC_JINA_EMBEDDINGS_DIR", "").strip():
+        return project_path("AIC_JINA_EMBEDDINGS_DIR")
+    canonical = (ARTIFACTS_DIR / "embeddings" / "jina").resolve()
+    if canonical.exists():
+        return canonical
+    return None
+
+
+UNIFIED_JINA_ROOT = resolve_unified_jina_root()
 if os.getenv("AIC_JINA_VECTORS_DIR", "").strip():
     JINA_VECTORS_DIR = project_path("AIC_JINA_VECTORS_DIR")
-elif any(COLLECTIONS_DIR.glob("L*/image_embeddings.npy")):
-    JINA_VECTORS_DIR = COLLECTIONS_DIR
+elif UNIFIED_JINA_ROOT is not None and (UNIFIED_JINA_ROOT / "image").is_dir():
+    JINA_VECTORS_DIR = (UNIFIED_JINA_ROOT / "image").resolve()
 else:
     JINA_VECTORS_DIR = (BASE_DIR / "embedding" / "jina" / "jina_embeddings_npy").resolve()
 
 if os.getenv("AIC_JINA_CAPTION_VECTORS_DIR", "").strip():
     JINA_CAPTION_VECTORS_DIR = project_path("AIC_JINA_CAPTION_VECTORS_DIR")
-elif any(COLLECTIONS_DIR.glob("L*/caption_embeddings.npy")):
-    JINA_CAPTION_VECTORS_DIR = COLLECTIONS_DIR
+elif UNIFIED_JINA_ROOT is not None and (UNIFIED_JINA_ROOT / "caption").is_dir():
+    JINA_CAPTION_VECTORS_DIR = (UNIFIED_JINA_ROOT / "caption").resolve()
 else:
     JINA_CAPTION_VECTORS_DIR = (
         BASE_DIR / "embedding" / "jina" / "caption_embeddings_npy"
@@ -159,8 +170,17 @@ def resolve_videos_dir():
 # Video local là artifact tùy chọn. Nếu không có MP4 đã giải nén,
 # build_playback_info() sẽ tự fallback về URL YouTube trong metadata.
 VIDEOS_DIR = resolve_videos_dir()
-TRAFFIC_CAPTION_DIR = canonical_or_legacy_path(
-    "AIC_TRAFFIC_CAPTION_DIR", ("collections",), ("captionbatch2_emb",)
+TRAFFIC_CAPTION_DIR = (
+    project_path("AIC_TRAFFIC_CAPTION_DIR")
+    if os.getenv("AIC_TRAFFIC_CAPTION_DIR", "").strip()
+    else (
+        (UNIFIED_JINA_ROOT / "caption").resolve()
+        if (
+            UNIFIED_JINA_ROOT is not None
+            and (UNIFIED_JINA_ROOT / "caption").is_dir()
+        )
+        else (BASE_DIR / "captionbatch2_emb").resolve()
+    )
 )
 TRAFFIC_DETECTION_PATH = canonical_or_legacy_path(
     "AIC_TRAFFIC_DETECTION_PATH",
@@ -184,7 +204,7 @@ TRAFFIC_MEDIA_INFO_DIR = project_path(
 )
 TRAFFIC_METADATA_DIR = canonical_or_legacy_path(
     "AIC_TRAFFIC_METADATA_DIR",
-    ("metadata",),
+    ("metadata", "frames"),
     ("ocr", "metadata_ocr_filtered", "metadata"),
 )
 TRAFFIC_SEARCH_CACHE_DIR = project_path(
@@ -364,10 +384,12 @@ def build_playback_info(video_id, pts_time=0):
 
 # File filtered đã nhúng OCR text. Với metadata legacy, overlay JSONL vẫn được
 # hỗ trợ để tái tạo đúng cùng kết quả mà không sửa nguồn canonical.
-ocr_text_is_embedded = OCR_METADATA_PATH.name.lower() in {
-    "metadata_ocr_filtered",
-    "metadata_ocr_filtered.zip",
-}
+canonical_metadata_root = (ARTIFACTS_DIR / "metadata").resolve()
+ocr_text_is_embedded = (
+    OCR_METADATA_PATH.name.lower()
+    in {"metadata_ocr_filtered", "metadata_ocr_filtered.zip"}
+    or OCR_METADATA_PATH.resolve().is_relative_to(canonical_metadata_root)
+)
 if OCR_TEXT_DIR.is_dir() and not ocr_text_is_embedded:
     ocr_overlay_stats = overlay_ocr_jsonl(OCR_TEXT_DIR, image_records)
     print(

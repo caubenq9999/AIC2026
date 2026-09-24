@@ -18,33 +18,40 @@ AIC2025/
 ├── README_ARTIFACTS.md
 │
 └── artifacts/
-    ├── collections/
-    │   ├── L21/
-    │   │   ├── image_embeddings.npy
-    │   │   ├── caption_embeddings.npy
-    │   │   └── caption_mapping.csv
-    │   ├── L22/
-    │   ├── ...
-    │   ├── L30/
-    │   ├── M01/
-    │   │   ├── caption_embeddings.npy
-    │   │   └── caption_mapping.csv
-    │   ├── M02/
-    │   ├── ...
-    │   ├── N001-N010/
-    │   │   ├── caption_embeddings.npy
-    │   │   └── caption_mapping.csv
-    │   ├── ...
-    │   └── S01/
-    │       ├── caption_embeddings.npy
-    │       └── caption_mapping.csv
+    ├── embeddings/
+    │   └── jina/
+    │       ├── image/
+    │       │   ├── L21.npy
+    │       │   ├── L22.npy
+    │       │   ├── ...
+    │       │   └── L30.npy
+    │       └── caption/
+    │           ├── L21.npy
+    │           ├── L21.json
+    │           ├── ...
+    │           ├── L30.npy
+    │           ├── L30.json
+    │           ├── M01/
+    │           │   ├── caption_embeddings.npy
+    │           │   └── caption_mapping.csv
+    │           ├── ...
+    │           ├── N001-N010/
+    │           │   ├── caption_embeddings.npy
+    │           │   └── caption_mapping.csv
+    │           └── S01/
+    │               ├── caption_embeddings.npy
+    │               └── caption_mapping.csv
     │
     ├── metadata/
-    │   ├── L21_V001.json
-    │   ├── ...
-    │   ├── M01_V001.json
-    │   ├── N001-V001.json
-    │   └── S01-V001.json
+    │   ├── frames/
+    │   │   ├── L21_V001.json
+    │   │   ├── ...
+    │   │   ├── M01_V001.json
+    │   │   ├── N001-V001.json
+    │   │   └── S01-V001.json
+    │   └── asr/
+    │       ├── L21_V001.json
+    │       └── ...
     │
     ├── keyframes/
     │   ├── L21/L21_V001/000000.webp
@@ -52,10 +59,6 @@ AIC2025/
     │   ├── Keyframes_M01.zip
     │   ├── Keyframes_N001-N010.zip
     │   └── Keyframes_S01.zip
-    │
-    ├── asr/
-    │   ├── L21_V001.json
-    │   └── ...
     │
     ├── detections/
     │   ├── N001-N010.parquet
@@ -73,22 +76,25 @@ trong một lần.
 
 ## 2. Quy ước collection
 
-Mỗi folder trong `artifacts/collections/` là một shard độc lập. Tên shard có thể
-là một collection (`L21`, `M01`, `S01`) hoặc một nhóm collection
-(`N001-N010`).
+`image/` chứa các shard ảnh phẳng `L21.npy`–`L30.npy`. `caption/` chứa các shard
+caption phẳng `L21.npy`–`L30.npy` cùng JSON sidecar; các đợt M/N/S giữ dạng folder
+đã chuẩn hóa như `M01/` hoặc `N001-N010/` vì mỗi shard cần cả vector và mapping.
 
-Mọi shard dùng cùng tên file:
+Collection logic của nhóm M là đủ `M01`–`M10`. Tên folder như `M08-M09`
+chỉ là **shard vật lý** gộp embedding của hai collection `M08` và `M09`;
+nó không phải tên một collection mới. Tương tự, `N001-N010` là shard gộp
+nhiều collection N.
+
+Các folder M/N/S dùng cùng tên file:
 
 | File | Vai trò | Bắt buộc |
 |---|---|---:|
 | `caption_embeddings.npy` | Vector caption Jina | Có |
 | `caption_mapping.csv` | Ánh xạ từng dòng vector về video/frame/caption | Có |
-| `image_embeddings.npy` | Vector ảnh Jina | Khi collection đã được encode ảnh |
 | `embedding_manifest.json` | Model, dimension, count, checksum | Khuyến nghị |
 
 Hiện `L21–L30` có cả image và caption embedding. Các collection `M/N/S` mới chỉ
-có caption embedding vẫn hợp lệ; khi encode thêm image chỉ cần đặt
-`image_embeddings.npy` vào đúng shard, không tạo layout mới.
+có caption embedding vẫn hợp lệ. Không cần đổi `L21.npy` thành folder `L21/`.
 
 ## 3. Hợp đồng embedding và mapping
 
@@ -112,16 +118,16 @@ Tên cột phụ như `archive`, `frame_id`, `hit_token_limit` được phép gi
 `video_id` và frame number phải suy được từ `relative_path`, hoặc từ
 `parent_path + frame_name`.
 
-Với `L21–L30`, loader hiện vẫn có thể ánh xạ theo thứ tự metadata toàn cục để
-tương thích artifact cũ. Tuy nhiên package chia sẻ mới vẫn nên kèm
-`caption_mapping.csv` giống M/N/S.
+Với `L21–L30`, loader ánh xạ theo thứ tự metadata toàn cục và kiểm tra số dòng,
+thứ tự collection. JSON sidecar `L21.json`–`L30.json` mô tả rows, dimension,
+model và checksum nguồn; không cần tạo `caption_mapping.csv` cho các shard này.
 
 ## 4. Metadata dùng chung
 
 Tất cả metadata keyframe đặt chung trong:
 
 ```text
-artifacts/metadata/
+artifacts/metadata/frames/
 ```
 
 Không còn khái niệm “metadata Batch 1” và “metadata Batch 2”. Một file đại diện
@@ -176,18 +182,19 @@ output/keyframes/N001-V001/000025.webp
 Không cần tải đủ keyframe để test retrieval. Nếu một shard mới chỉ có embedding,
 UI dùng placeholder nhưng vẫn mở detail và nộp được.
 
-## 6. OCR, ASR và detection là enrichment tùy chọn
+## 6. OCR, ASR và detection
 
-OCR nằm ngay trong `ocr_text` của metadata. ASR và detection dùng root chung:
+OCR đã nằm ngay trong trường `ocr_text` của metadata frame. ASR cũng
+thuộc artifact metadata chung, nhưng được tách thành các segment có timestamp:
 
 ```text
-artifacts/asr/
+artifacts/metadata/frames/  # metadata keyframe, bao gồm ocr_text
+artifacts/metadata/asr/     # transcript ASR theo video và khoảng thời gian
 artifacts/detections/
 ```
 
-Collection chưa có OCR/ASR/detection vẫn được load và search bằng caption Jina.
-Khi bổ sung artifact sau này chỉ cần dùng đúng `video_id`; không tạo thêm một
-pipeline hoặc folder Batch 2 riêng.
+Vì OCR và ASR đã nằm trong gói metadata nên không cần tạo artifact
+`ocr/` hay `asr/` độc lập cho layout mới. Detection vẫn là enrichment riêng.
 
 ## 7. Video local và YouTube
 
@@ -218,20 +225,21 @@ tạo thêm `media-info/` trong layout chuẩn. Folder `aic26-b2-media-info/` c�
 ## 8. Manifest
 
 `artifacts-manifest.json` ở repo chỉ chứa metadata nhỏ: model/revision Jina,
-dimension, danh sách collection, số dòng và schema version. Manifest schema 2
-đã dùng chung cho L/M/N và không còn đường dẫn Apple-CLIP.
+dimension, collection logic, shard vật lý, số dòng và schema version. Manifest
+schema 2 đã dùng chung cho L/M/N và không còn đường dẫn Apple-CLIP.
 
 ## 9. Chuyển layout hiện tại sang chuẩn mới
 
 | Hiện tại | Chuẩn mới |
 |---|---|
-| `embedding/jina/jina_embeddings_npy/L21.npy` | `artifacts/collections/L21/image_embeddings.npy` |
-| `embedding/jina/caption_embeddings_npy/L21.npy` | `artifacts/collections/L21/caption_embeddings.npy` |
-| `captionbatch2_emb/M01/*` | `artifacts/collections/M01/*` |
-| `captionbatch2_emb/N001-N010/*` | `artifacts/collections/N001-N010/*` |
-| `ocr/metadata_ocr_filtered/metadata/*.json` | `artifacts/metadata/*.json` |
+| `embedding/jina/jina_embeddings_npy/L21.npy` | `artifacts/embeddings/jina/image/L21.npy` |
+| `embedding/jina/caption_embeddings_npy/L21.npy` | `artifacts/embeddings/jina/caption/L21.npy` |
+| `embedding/jina/caption_embeddings_npy/L21.json` | `artifacts/embeddings/jina/caption/L21.json` |
+| `captionbatch2_emb/M01/*` | `artifacts/embeddings/jina/caption/M01/*` |
+| `captionbatch2_emb/N001-N010/*` | `artifacts/embeddings/jina/caption/N001-N010/*` |
+| `ocr/metadata_ocr_filtered/metadata/*.json` | `artifacts/metadata/frames/*.json` |
 | `keyframes/*` | `artifacts/keyframes/*` |
-| `asr/metadata_asr_clean/*` | `artifacts/asr/*` |
+| `asr/metadata_asr_clean/*` | `artifacts/metadata/asr/*` |
 | `detection segmentation/detection segmentation/*` | `artifacts/detections/*` |
 | `videos/*` | `artifacts/videos/*` |
 
@@ -254,11 +262,11 @@ $env:AIC_ARTIFACTS_DIR = "D:\AIC_DATA\artifacts"
 Các biến override chi tiết vẫn được hỗ trợ khi cần:
 
 ```powershell
-$env:AIC_COLLECTIONS_DIR = "D:\AIC_DATA\artifacts\collections"
+$env:AIC_JINA_EMBEDDINGS_DIR = "D:\AIC_DATA\artifacts\embeddings\jina"
 $env:AIC_KEYFRAMES_DIR = "D:\AIC_DATA\artifacts\keyframes"
 $env:AIC_VIDEOS_DIR = "D:\AIC_DATA\artifacts\videos"
-$env:AIC_OCR_METADATA_PATH = "D:\AIC_DATA\artifacts\metadata"
-$env:AIC_ASR_METADATA_DIR = "D:\AIC_DATA\artifacts\asr"
+$env:AIC_OCR_METADATA_PATH = "D:\AIC_DATA\artifacts\metadata\frames"
+$env:AIC_ASR_METADATA_DIR = "D:\AIC_DATA\artifacts\metadata\asr"
 $env:AIC_TRAFFIC_DETECTION_PATH = "D:\AIC_DATA\artifacts\detections"
 ```
 
@@ -274,13 +282,14 @@ Parquet hoặc index/cache sinh tự động.
 
 ## 12. Checklist thêm collection
 
-1. Tạo một folder trong `artifacts/collections/`.
+1. Tạo một folder M/N/S trong `artifacts/embeddings/jina/caption/`.
 2. Đặt `caption_embeddings.npy` và `caption_mapping.csv` cùng folder.
 3. Kiểm tra số dòng khớp và dimension bằng 1,024.
-4. Chép metadata từng video vào `artifacts/metadata/`.
+4. Chép metadata frame (có `ocr_text`) vào `artifacts/metadata/frames/`
+   và ASR vào `artifacts/metadata/asr/`.
 5. Thêm keyframe ZIP/folder nếu cần thumbnail thật.
 6. Thêm MP4/ZIP video hoặc điền `video_url` vào metadata nếu cần phát video.
-7. OCR/ASR/detection có thể bổ sung sau.
+7. Detection có thể bổ sung sau.
 8. Restart backend và kiểm tra:
 
 ```powershell

@@ -124,22 +124,19 @@ Lưu ý khi chia sẻ/triển khai: checkpoint Jina này công bố theo giấy 
 
 ## 3. Cấu trúc artifact bắt buộc
 
-Chuẩn bị một data root theo đúng layout này:
+Chuẩn mới dùng một root `artifacts/`; OCR và ASR đều nằm trong artifact metadata:
 
 ```text
-data-root/
+artifacts/
 ├── keyframes/
 │   ├── L21/L21_V001/000000.jpg
 │   └── ...
-├── embedding/jina/
-│   ├── jina_embeddings_npy/L21.npy ... L30.npy
-│   └── caption_embeddings_npy/L21.npy ... L30.npy
-├── ocr/
-│   ├── metadata_ocr_filtered.zip           # File vận chuyển/tải về
-│   └── metadata_ocr_filtered/              # Runtime dùng folder đã giải nén
-│       └── metadata/*.json
-├── asr/metadata_asr_clean/
-│   └── *.json
+├── embeddings/jina/
+│   ├── image/L21.npy ... L30.npy
+│   └── caption/L21.npy ... L30.npy, M01/ ...
+├── metadata/
+│   ├── frames/*.json             # metadata keyframe có sẵn ocr_text
+│   └── asr/*.json                # transcript ASR có timestamp
 └── yolov8n.pt                    # tùy chọn, chỉ cho Auto-Crop
 ```
 
@@ -147,14 +144,12 @@ Các bộ vector phải có cùng thứ tự row với metadata, 1024 chiều
 và đã L2-normalize. Chi tiết package collection thống nhất xem trong
 `README_ARTIFACTS.md`.
 
-`metadata_ocr_filtered.zip` chứa cả metadata canonical và `ocr_text` lấy từ OCR
-original sau khi lọc ticker L21/L22. Trước khi chạy, giải nén ZIP vào
-`ocr/metadata_ocr_filtered/`; `prepare_data.py` tự làm bước này nếu folder
-chưa có. Runtime không còn cần mang theo
-`metadata_ocr/` cũ hoặc `OCR_original_no_LLM/`. Hai nguồn đó chỉ cần giữ ở máy
-tạo artifact nếu muốn chạy lại `scripts/build_filtered_ocr_metadata.py`.
+Metadata frame đã có `ocr_text`; ASR nằm trong cùng root `metadata/asr`.
+Runtime không cần artifact OCR hoặc ASR tách rời. Layout legacy
+`ocr/metadata_ocr_filtered` và `asr/metadata_asr_clean` vẫn được tự động dò
+trong giai đoạn chuyển đổi.
 
-Giải nén thủ công trên PowerShell:
+Nếu vẫn dùng gói `metadata_ocr_filtered.zip` legacy, giải nén thủ công:
 
 ```powershell
 New-Item -ItemType Directory -Force D:\AIC2026-data\ocr\metadata_ocr_filtered
@@ -208,12 +203,12 @@ Nếu artifact nằm ngay trong folder project như máy gốc, không cần c�
 Nếu artifact nằm ở `D:\AIC2026-data`, đặt biến môi trường:
 
 ```powershell
-$dataRoot = "D:\AIC2026-data"
+$dataRoot = "D:\AIC2026-data\artifacts"
+$env:AIC_ARTIFACTS_DIR = $dataRoot
 $env:AIC_KEYFRAMES_DIR = "$dataRoot\keyframes"
-$env:AIC_OCR_METADATA_PATH = "$dataRoot\ocr\metadata_ocr_filtered"
-$env:AIC_ASR_METADATA_DIR = "$dataRoot\asr\metadata_asr_clean"
-$env:AIC_JINA_VECTORS_DIR = "$dataRoot\embedding\jina\jina_embeddings_npy"
-$env:AIC_JINA_CAPTION_VECTORS_DIR = "$dataRoot\embedding\jina\caption_embeddings_npy"
+$env:AIC_OCR_METADATA_PATH = "$dataRoot\metadata\frames"
+$env:AIC_ASR_METADATA_DIR = "$dataRoot\metadata\asr"
+$env:AIC_JINA_EMBEDDINGS_DIR = "$dataRoot\embeddings\jina"
 $env:AIC_YOLO_MODEL_PATH = "$dataRoot\yolov8n.pt"
 $env:AIC_CACHE_DIR = "D:\AIC2026-cache\huggingface"
 python app.py
@@ -287,20 +282,20 @@ Invoke-RestMethod http://localhost:5000/health
 | Biến | Mặc định |
 |---|---|
 | `AIC_ARTIFACTS_DIR` | `artifacts`; root thống nhất ưu tiên |
-| `AIC_COLLECTIONS_DIR` | `artifacts/collections` |
-| `AIC_KEYFRAMES_DIR` | `keyframes` |
-| `AIC_OCR_METADATA_PATH` | ưu tiên folder `ocr/metadata_ocr_filtered` |
+| `AIC_JINA_EMBEDDINGS_DIR` | `artifacts/embeddings/jina` |
+| `AIC_KEYFRAMES_DIR` | ưu tiên `artifacts/keyframes`, fallback `keyframes` |
+| `AIC_OCR_METADATA_PATH` | ưu tiên `artifacts/metadata/frames`, fallback metadata OCR legacy |
 | `AIC_OCR_TEXT_DIR` | tùy chọn; chỉ overlay khi dùng metadata legacy |
-| `AIC_ASR_METADATA_DIR` | `asr/metadata_asr_clean` |
+| `AIC_ASR_METADATA_DIR` | ưu tiên `artifacts/metadata/asr`, fallback `asr/metadata_asr_clean` |
 | `AIC_JINA_VECTORS_DIR` | `embedding/jina/jina_embeddings_npy` |
 | `AIC_JINA_CAPTION_VECTORS_DIR` | `embedding/jina/caption_embeddings_npy` |
 | `AIC_YOLO_MODEL_PATH` | `yolov8n.pt` |
 | `AIC_VIDEOS_DIR` | `videos`; tùy chọn, tự fallback sang folder `video` cũ hoặc YouTube |
-| `AIC_TRAFFIC_CAPTION_DIR` | `captionbatch2_emb`; tự quét mọi shard con |
+| `AIC_TRAFFIC_CAPTION_DIR` | ưu tiên `artifacts/embeddings/jina/caption`, fallback `captionbatch2_emb` |
 | `AIC_TRAFFIC_DETECTION_PATH` | `detection segmentation/detection segmentation`; tùy chọn, tự quét Parquet |
 | `AIC_TRAFFIC_KEYFRAMES_DIR` | `keyframes`; nhận folder đã giải nén hoặc ZIP, dùng chung với Batch 1 |
 | `AIC_TRAFFIC_MAP_DIR` | `keyframes`; tự tìm map CSV nếu có |
-| `AIC_TRAFFIC_METADATA_DIR` | `ocr/metadata_ocr_filtered/metadata`; chỉ đọc JSON M/N/S |
+| `AIC_TRAFFIC_METADATA_DIR` | ưu tiên `artifacts/metadata/frames`; chỉ đọc JSON M/N/S |
 | `AIC_TRAFFIC_SEARCH_CACHE_DIR` | `.cache/batch2_search` |
 | `AIC_TRAFFIC_SEARCH_DIMS` | `128` để test nhanh; `1024` để exact search |
 | `AIC_CACHE_DIR` | `.cache/huggingface` |

@@ -1,7 +1,7 @@
 {
   "schema_version": 2,
   "dataset": "AIC2026",
-  "artifact_layout": "unified-collections-v1",
+  "artifact_layout": "unified-jina-embeddings-v1",
   "artifact_root": "artifacts",
   "total_frames": 817929,
   "embedding_dimension": 1024,
@@ -32,7 +32,12 @@
       "coverage": "all-current-collections"
     }
   },
-  "collections": {
+  "logical_collections": {
+    "L": "L21-L30",
+    "M": "M01-M10",
+    "N": "N001-N100"
+  },
+  "embedding_shards": {
     "L21": 26565,
     "L22": 32358,
     "L23": 2847,
@@ -61,16 +66,19 @@
     "N081-N100": 35694
   },
   "paths": {
-    "collections": "artifacts/collections",
-    "metadata": "artifacts/metadata",
+    "jina_image_embeddings": "artifacts/embeddings/jina/image",
+    "jina_caption_embeddings": "artifacts/embeddings/jina/caption",
+    "frame_metadata": "artifacts/metadata/frames",
+    "asr_metadata": "artifacts/metadata/asr",
     "keyframes": "artifacts/keyframes",
-    "asr": "artifacts/asr",
     "detections": "artifacts/detections",
     "videos": "artifacts/videos"
   },
   "legacy_layout_supported": true,
   "notes": [
     "Batch 1 and Batch 2 are release labels only; all collections use the same artifact schema.",
+    "M collections are logically M01-M10; M08-M09 is only a physical embedding shard containing M08 and M09.",
+    "OCR and ASR are included under the shared metadata artifact root.",
     "Collections without image embeddings remain searchable through Jina caption embeddings."
   ]
 }
