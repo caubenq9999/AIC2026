@@ -38,6 +38,9 @@ map-keyframes/
 map-keyframes-b2/
 media-info/
 fine_tuned_model_lora_2025/
+captionbatch2_emb/
+keyframes_batch2/
+detection segmentation/
 
 # --- Bản sao / thư mục cũ ---
 code/

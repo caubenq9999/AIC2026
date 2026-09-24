@@ -238,6 +238,17 @@ Lần khởi động đầu sẽ dựng Apple-CLIP mmap cache từ các ZIP. `GR
 cho Query Expansion và dịch query Apple-CLIP; nếu thiếu key, Apple-CLIP vẫn chạy
 với query gốc và giao diện sẽ báo rõ chưa dịch.
 
+Player ưu tiên file video trong `video/`, tìm đệ quy theo tên nội bộ như
+`L21_V001.mp4`. Backend stream file với HTTP Range để tua trực tiếp trên trình
+duyệt. Nếu không có file local tương ứng, hệ thống mới dùng URL YouTube trong
+metadata.
+
+Demo giao thông N081–N100 nằm ở mode **Giao thông**. Có thể nhập query tiếng Việt
+như `xe máy màu đỏ`, `xe buýt màu trắng` hoặc `đường đông có ô tô và xe tải`.
+Loại phương tiện được lọc bằng detection; màu sắc và ngữ cảnh được xếp hạng bằng
+caption embedding. Timestamp được đọc từ `map-keyframes`, sau đó player mở video
+local theo ID dạng `N081-V001`.
+
 Nộp trực tiếp vòng chung kết dùng DRES v2. Trước giờ thi, xác nhận địa chỉ DRES
 do BTC cung cấp; cấu hình bằng biến môi trường `BTC_API_BASE_URL` nếu khác mặc
 định `https://eventretrieval.oj.io.vn`. Ví dụ trong PowerShell, trước khi chạy app:
@@ -271,6 +282,10 @@ Invoke-RestMethod http://localhost:5000/health
 | `AIC_APPLE_CLIP_CHECKPOINT_PATH` | `embedding/apple_finetuned/apple_clip_epoch_5_inference.pt` |
 | `AIC_APPLE_CLIP_CACHE_DIR` | `.cache/apple_clip_vectors` |
 | `AIC_YOLO_MODEL_PATH` | `yolov8n.pt` |
+| `AIC_TRAFFIC_CAPTION_DIR` | `captionbatch2_emb/Video_N081-N100` |
+| `AIC_TRAFFIC_DETECTION_PATH` | `detection segmentation/detection segmentation/Video_N081-N100_metadata.parquet` |
+| `AIC_TRAFFIC_KEYFRAMES_DIR` | `keyframes_batch2/N081-N100/keyframes` |
+| `AIC_TRAFFIC_MAP_DIR` | `keyframes_batch2/N081-N100/map-keyframes` |
 | `AIC_CACHE_DIR` | `.cache/huggingface` |
 | `GROQ_API_KEY` | rỗng; Query Expansion và dịch Apple-CLIP bị tắt |
 | `BTC_API_BASE_URL` | `https://eventretrieval.oj.io.vn`; cần xác nhận host thật với BTC |

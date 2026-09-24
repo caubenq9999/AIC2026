@@ -90,6 +90,7 @@ from semantic_search import (
     prepare_npz_archive_cache,
 )
 from search_bm25 import PersistentInvertedBM25, fingerprint_paths
+from traffic_search import TrafficSearchIndex, expanded_query, parse_traffic_query
 from groq import Groq
 from flask_cors import CORS
 # from rank_bm25 import BM25Okapi # <-- XÓA BỎ (Không dùng thư viện nữa)
@@ -129,6 +130,27 @@ APPLE_CLIP_CACHE_DIR = project_path(
 SEARCH_INDEX_CACHE_DIR = project_path(
     "AIC_SEARCH_INDEX_CACHE_DIR", ".cache", "search_indices"
 )
+TRAFFIC_CAPTION_DIR = project_path(
+    "AIC_TRAFFIC_CAPTION_DIR", "captionbatch2_emb", "Video_N081-N100"
+)
+TRAFFIC_DETECTION_PATH = project_path(
+    "AIC_TRAFFIC_DETECTION_PATH",
+    "detection segmentation",
+    "detection segmentation",
+    "Video_N081-N100_metadata.parquet",
+)
+TRAFFIC_KEYFRAMES_DIR = project_path(
+    "AIC_TRAFFIC_KEYFRAMES_DIR",
+    "keyframes_batch2",
+    "N081-N100",
+    "keyframes",
+)
+TRAFFIC_MAP_DIR = project_path(
+    "AIC_TRAFFIC_MAP_DIR",
+    "keyframes_batch2",
+    "N081-N100",
+    "map-keyframes",
+)
 SEMANTIC_QUERY_CACHE_SIZE = max(
     0, int(os.getenv("AIC_SEMANTIC_QUERY_CACHE_SIZE", "256"))
 )
@@ -145,6 +167,42 @@ if not APPLE_CLIP_CHECKPOINT_PATH.is_file():
     # Cho phép chạy ngay với checkpoint training cũ; bản inference-only được
     # ưu tiên vì không chứa hơn 7 GB optimizer state không dùng lúc retrieval.
     APPLE_CLIP_CHECKPOINT_PATH = APPLE_CLIP_ARTIFACTS_DIR / "epoch_5.pt"
+
+
+LOCAL_VIDEO_ID_PATTERN = re.compile(r"^[A-Z]\d{2,3}[-_]V\d+$", re.IGNORECASE)
+BROWSER_VIDEO_EXTENSIONS = {".mp4", ".webm", ".mov", ".m4v"}
+
+
+def build_local_video_index(videos_dir):
+    """Index browser-playable local videos by internal ID, e.g. L21_V001."""
+    videos_dir = Path(videos_dir)
+    if not videos_dir.is_dir():
+        print(f"CẢNH BÁO: Không tìm thấy folder video local {videos_dir}.")
+        return {}
+
+    index = {}
+    for video_path in sorted(videos_dir.rglob("*")):
+        if (
+            not video_path.is_file()
+            or video_path.suffix.lower() not in BROWSER_VIDEO_EXTENSIONS
+        ):
+            continue
+        video_id = video_path.stem.upper()
+        if not LOCAL_VIDEO_ID_PATTERN.fullmatch(video_id):
+            continue
+        resolved_path = video_path.resolve()
+        if video_id in index:
+            print(
+                f"CẢNH BÁO: Trùng video local {video_id}; "
+                f"giữ {index[video_id]}, bỏ qua {resolved_path}."
+            )
+            continue
+        index[video_id] = resolved_path
+    return index
+
+
+local_video_index = build_local_video_index(VIDEOS_DIR)
+print(f"Loaded {len(local_video_index)} local videos from {VIDEOS_DIR}.")
 
 # --- 4. CẤU HÌNH GROQ API ---
 GROQ_API_KEY = os.getenv("GROQ_API_KEY", "").strip()
@@ -190,6 +248,54 @@ keyframe_time_cache = retrieval_data.keyframe_time_cache
 video_frame_ids = retrieval_data.video_frame_ids
 video_url_cache = retrieval_data.video_url_cache
 print(f"Loaded {len(image_records)} embedding/OCR records from {len(metadata_cache)} videos.")
+
+traffic_search_index = None
+traffic_search_reason = None
+try:
+    traffic_search_index = TrafficSearchIndex(
+        caption_dir=TRAFFIC_CAPTION_DIR,
+        detection_path=TRAFFIC_DETECTION_PATH,
+        keyframes_dir=TRAFFIC_KEYFRAMES_DIR,
+        map_dir=TRAFFIC_MAP_DIR,
+    )
+    print(
+        f"Traffic Search sẵn sàng: {traffic_search_index.size:,} frames / "
+        f"{traffic_search_index.video_count} videos."
+    )
+except Exception as exc:
+    traffic_search_reason = f"{type(exc).__name__}: {exc}"
+    print(f"CẢNH BÁO: Traffic Search bị tắt: {traffic_search_reason}")
+
+
+def build_playback_info(video_id, pts_time=0):
+    """Prefer a local video endpoint and fall back to the external watch URL."""
+    normalized_video_id = str(video_id or "").upper()
+    try:
+        playback_start = max(0.0, float(pts_time or 0))
+    except (TypeError, ValueError):
+        playback_start = 0.0
+
+    if normalized_video_id in local_video_index:
+        return {
+            "playback_url": f"/videos/{normalized_video_id}",
+            "playback_type": "local",
+            "playback_start": playback_start,
+        }
+
+    watch_url = video_url_cache.get(normalized_video_id)
+    if watch_url:
+        separator = "&" if "?" in watch_url else "?"
+        return {
+            "playback_url": f"{watch_url}{separator}t={int(playback_start)}s",
+            "playback_type": "youtube",
+            "playback_start": playback_start,
+        }
+
+    return {
+        "playback_url": None,
+        "playback_type": None,
+        "playback_start": playback_start,
+    }
 
 # File filtered đã nhúng OCR text. Với metadata legacy, overlay JSONL vẫn được
 # hỗ trợ để tái tạo đúng cùng kết quả mà không sửa nguồn canonical.
@@ -1717,23 +1823,77 @@ def search_fusion():
         return jsonify({"error": str(e)}), 500
 
 
+@app.route('/search_traffic', methods=['POST'])
+def search_traffic():
+    """Batch 2 N081-N100: caption semantic + vehicle detection reranking."""
+    if traffic_search_index is None:
+        return jsonify({"error": traffic_search_reason or "Traffic Search chưa sẵn sàng."}), 503
+    try:
+        payload = request.get_json(silent=True) or {}
+        query_text = str(payload.get("query") or "").strip()
+        if not query_text:
+            return jsonify({"error": "Vui lòng nhập tình huống giao thông cần tìm."}), 400
+        top_k = max(1, min(int(payload.get("top_k", 100)), 500))
+        group_results = bool(payload.get("group", False))
+        parsed_query = parse_traffic_query(query_text)
+        model_query = expanded_query(query_text, parsed_query)
+        query_vector = encode_semantic_query(model_query, "jina")
+        pool_k = min(traffic_search_index.size, top_k * 5 if group_results else top_k)
+        results = traffic_search_index.search(query_text, query_vector, top_k=pool_k)
+
+        summary = {}
+        for item in results:
+            video_id = item["videoId"]
+            summary[video_id] = summary.get(video_id, 0) + 1
+        summary = dict(sorted(summary.items(), key=lambda item: item[1], reverse=True))
+
+        response = {
+            "results": results,
+            "summary": summary,
+            "mode": "traffic",
+            "query_analysis": {
+                "vehicles": parsed_query["vehicles"],
+                "colors": parsed_query["colors"],
+                "busy": parsed_query["busy"],
+                "sparse": parsed_query["sparse"],
+            },
+        }
+        if group_results:
+            grouped = {}
+            for item in results:
+                grouped.setdefault(item["videoId"], []).append(item)
+            for items in grouped.values():
+                items.sort(key=lambda item: item["pts_time"])
+            response["results"] = grouped
+        return jsonify(response)
+    except ModelUnavailableError as exc:
+        return jsonify({"error": str(exc)}), 503
+    except (TypeError, ValueError) as exc:
+        return jsonify({"error": str(exc)}), 400
+    except Exception as exc:
+        print(f"Lỗi trong /search_traffic: {exc}")
+        return jsonify({"error": str(exc)}), 500
+
+
 # (CẬP NHẬT) API /metadata
 @app.route('/metadata', methods=['POST'])
 def get_metadata():
     try:
         image_path = request.json['image_path']
+        if traffic_search_index is not None:
+            traffic_meta = traffic_search_index.metadata_for_path(image_path)
+            if traffic_meta is not None:
+                traffic_meta.update(build_playback_info(
+                    traffic_meta["video_id"], traffic_meta["pts_time"]
+                ))
+                return jsonify(traffic_meta)
         _, video_id, frame_id_str = get_web_path(image_path)
         if not frame_id_str or video_id == "N/A":
             raise ValueError(f"Invalid keyframe path: {image_path}")
         frame_id = int(frame_id_str)
         meta = dict(metadata_cache.get(video_id, {}).get(frame_id, {}))
         meta['n'] = frame_id
-        watch_url = video_url_cache.get(video_id)
-        if watch_url and meta.get('pts_time') is not None:
-            separator = '&' if '?' in watch_url else '?'
-            meta['playback_url'] = f"{watch_url}{separator}t={int(float(meta['pts_time']))}s"
-        else:
-            meta['playback_url'] = watch_url
+        meta.update(build_playback_info(video_id, meta.get('pts_time', 0)))
         return jsonify(meta)
     except Exception as e:
         return jsonify({"error": str(e)}), 500
@@ -1745,6 +1905,10 @@ def get_neighbor_frames():
         payload = request.get_json() or {}
         image_path = payload['image_path']
         radius = max(1, min(int(payload.get('radius', 15)), 50))
+        if traffic_search_index is not None:
+            traffic_neighbors = traffic_search_index.neighbors(image_path, radius)
+            if traffic_neighbors:
+                return jsonify({"neighbors": traffic_neighbors})
         _, video_id, frame_id_str = get_web_path(image_path)
         if not frame_id_str or video_id == "N/A":
             return jsonify({"neighbors": []})
@@ -1759,6 +1923,10 @@ def get_neighbor_frames():
 def get_keyframe_map():
     try:
         video_id = request.json['video_id']
+        if traffic_search_index is not None:
+            traffic_map = traffic_search_index.keyframe_map(video_id)
+            if traffic_map:
+                return jsonify(traffic_map)
         map_data = keyframe_time_cache.get(video_id)
         # (SỬA LỖI) Thêm check `if map_data`
         if map_data:
@@ -1968,8 +2136,6 @@ def resolve_submission_playback():
         video_id = str(payload.get("videoId") or "").upper()
         frame_idx = int(payload.get("frameIdx"))
         video_records = metadata_cache.get(video_id)
-        if not video_records:
-            raise ValueError(f"Không tìm thấy video {video_id!r}.")
 
         raw_pts_time = payload.get("ptsTime", payload.get("pts_time"))
         if raw_pts_time not in (None, ""):
@@ -1979,6 +2145,27 @@ def resolve_submission_playback():
             pts_time = frame_idx / float(fps) if fps and float(fps) > 0 else None
         if pts_time is not None and (not math.isfinite(pts_time) or pts_time < 0):
             raise ValueError("Timestamp không hợp lệ.")
+
+        if not video_records:
+            traffic_frame = (
+                traffic_search_index.nearest_video_frame(video_id, frame_idx, pts_time)
+                if traffic_search_index is not None
+                else None
+            )
+            if traffic_frame is None:
+                raise ValueError(f"Không tìm thấy video {video_id!r}.")
+            resolved_time = float(traffic_frame["pts_time"])
+            playback_info = build_playback_info(video_id, resolved_time)
+            return jsonify({
+                "videoId": video_id,
+                "requestedFrameIdx": frame_idx,
+                "frameIdx": frame_idx,
+                "keyframeFrameIdx": int(traffic_frame["frame_idx"]),
+                "pts_time": resolved_time,
+                "path": traffic_frame["path"],
+                **playback_info,
+            })
+
         if pts_time is None:
             closest = min(
                 video_records.values(),
@@ -2146,6 +2333,17 @@ def health():
         "status": "ok" if hybrid_available else "degraded",
         "device": device,
         "records": len(image_records),
+        "local_videos": {
+            "available": bool(local_video_index),
+            "count": len(local_video_index),
+            "directory": str(VIDEOS_DIR),
+        },
+        "traffic": {
+            "available": traffic_search_index is not None,
+            "reason": traffic_search_reason,
+            "frames": traffic_search_index.size if traffic_search_index is not None else 0,
+            "videos": traffic_search_index.video_count if traffic_search_index is not None else 0,
+        },
         "jina": {"available": jina_available, "reason": jina_reason},
         "jina_hybrid": {
             "available": hybrid_available,
@@ -2170,6 +2368,17 @@ def serve_index(): return send_from_directory(str(BASE_DIR), 'index.html')
 @app.route('/submission-builder')
 def serve_submission_builder():
     return send_from_directory(str(BASE_DIR), 'submission-builder.html')
+@app.route('/videos/<video_id>')
+def serve_local_video(video_id):
+    video_path = local_video_index.get(str(video_id).upper())
+    if video_path is None or not video_path.is_file():
+        abort(404)
+    # conditional=True enables byte-range responses so browser seeking works.
+    return send_file(str(video_path), conditional=True)
+@app.route('/batch2-keyframes/<path:path>')
+def serve_batch2_keyframes(path):
+    mimetype = "image/webp" if Path(path).suffix.lower() == ".webp" else None
+    return send_from_directory(str(TRAFFIC_KEYFRAMES_DIR), path, mimetype=mimetype)
 @app.route('/<path:path>')
 def serve_static(path):
     if path not in PUBLIC_STATIC_FILES:
