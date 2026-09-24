@@ -83,7 +83,11 @@ function createLazyImage(item) {
     if (item.caption) img.title += `\nCaption: ${item.caption}`;
 
     img.addEventListener('click', () => {
-        window.showImageDetail(item.path, img, { searchContext });
+        if (typeof window.showImageDetail !== 'function') {
+            console.error('Panel chi tiết chưa khởi tạo xong.');
+            return;
+        }
+        window.showImageDetail(item.path, img, { searchContext, focusPanel: true });
     });
 
     imageObserver.observe(img);
@@ -120,8 +124,6 @@ document.addEventListener('DOMContentLoaded', () => {
     const expandQueryButton = document.getElementById('expand-query-button');
     const expandQueryDefaultText = expandQueryButton.textContent;
     const queryExpansionOptions = document.getElementById('query-expansion-options');
-    const appleTranslationBox = document.getElementById('apple-translation-box');
-    const appleTranslationCheckbox = document.getElementById('apple-translation-checkbox');
     // (THÊM MỚI) DOM cho danh sách ô nhập sự kiện của TRAKE
     const trakeInputArea = document.getElementById('trake-input-area');
     const trakeEventRows = document.getElementById('trake-event-rows');
@@ -163,6 +165,11 @@ document.addEventListener('DOMContentLoaded', () => {
     const videoPlayerArea = document.getElementById('video-player-area');
     const videoPlayerTitle = document.getElementById('video-player-title');
     const closeVideoPlayerButton = document.getElementById('close-video-player');
+    const localVideoPlayer = document.getElementById('local-video-player');
+    let currentLoadedLocalVideoId = null;
+    let currentLoadedLocalUrl = '';
+    let localPlaybackRequestId = 0;
+    let currentPlaybackKind = null;
 
     // DOM cho Panel thời gian thực
     const realTimePanel = document.getElementById('real-time-panel');
@@ -1179,7 +1186,6 @@ document.addEventListener('DOMContentLoaded', () => {
 
         // (THÊM MỚI) Ẩn/hiện các tùy chọn
         if (queryExpansionBox) queryExpansionBox.classList.add('hidden'); // (THÊM MỚI)
-        if (appleTranslationBox) appleTranslationBox.classList.add('hidden');
         groupResultsBox.classList.add('hidden'); // Ẩn group box
         if (windowSizeBox) windowSizeBox.classList.add('hidden'); // Ẩn window size
         imageUploadArea.classList.add('hidden'); // Ẩn single upload mặc định
@@ -1218,9 +1224,6 @@ document.addEventListener('DOMContentLoaded', () => {
                 // (THÊM MỚI) Query Expansion chỉ áp dụng cho Semantic Search
                 if (queryExpansionBox) queryExpansionBox.classList.remove('hidden');
             }
-            if (searchMode === 'semantic-apple-clip' && appleTranslationBox) {
-                appleTranslationBox.classList.remove('hidden');
-            }
         }
 
         // (SỬA LỖI) Logic ASR/Image container
@@ -1234,10 +1237,9 @@ document.addEventListener('DOMContentLoaded', () => {
         }
     }
     const searchModeLabels = {
-        'semantic-apple-clip': 'Semantic · Apple-CLIP',
-        'semantic-jina': 'Semantic · Jina',
-        'semantic-jina-hybrid': 'Jina · Hybrid',
-        traffic: 'Giao thông · Batch 2',
+        'semantic-jina': 'Semantic · Jina · Tất cả collection',
+        'semantic-jina-hybrid': 'Jina · Hybrid · Tất cả collection',
+        traffic: 'Jina Caption + Detection',
         ocr: 'OCR',
         asr: 'ASR',
         fusion: 'Fusion',
@@ -1434,9 +1436,6 @@ document.addEventListener('DOMContentLoaded', () => {
             if (searchMode.startsWith('semantic-')) {
                 endpoint = '/search';
                 payload.semantic_model = searchMode.replace('semantic-', '');
-                if (searchMode === 'semantic-apple-clip') {
-                    payload.translate_query = appleTranslationCheckbox?.checked !== false;
-                }
             }
             else if (searchMode === 'ocr') {
                 endpoint = '/search_ocr';
@@ -2224,14 +2223,33 @@ document.addEventListener('DOMContentLoaded', () => {
     }
 
     function getCurrentSubmissionKeyframe(playbackTimeOverride = null) {
-        if (!currentSubmissionVideoId
-            || currentLoadedInternalMapId !== currentSubmissionVideoId) return null;
+        if (!currentSubmissionVideoId) return null;
+        const detailVideoId = document.getElementById('video-name').textContent.trim();
+        const detailTime = Number(document.getElementById('meta-pts').textContent);
+        const detailFrameIdx = Number(document.getElementById('meta-idx').textContent);
+        const detailFrameN = Number(
+            currentPlaybackKeyframe?.frameN ?? keyframeNumber(currentDetailPath)
+        );
+        const detailKeyframe = (
+            !detailBox.classList.contains('hidden')
+            && detailVideoId === currentSubmissionVideoId
+            && Number.isFinite(detailTime) && detailTime >= 0
+            && Number.isSafeInteger(detailFrameIdx) && detailFrameIdx >= 0
+        ) ? {
+            videoId: detailVideoId,
+            frameN: Number.isSafeInteger(detailFrameN) ? detailFrameN : detailFrameIdx,
+            frameIdx: detailFrameIdx,
+            ptsTime: detailTime,
+            path: currentDetailPath,
+        } : null;
+
+        if (currentLoadedInternalMapId !== currentSubmissionVideoId) return detailKeyframe;
         if (currentPlaybackKind === 'local') {
-            if (currentLoadedLocalVideoId !== currentSubmissionVideoId) return null;
+            if (currentLoadedLocalVideoId !== currentSubmissionVideoId) return detailKeyframe;
         } else if (currentPlaybackKind === 'youtube') {
-            if (!ytPlayer || typeof ytPlayer.getCurrentTime !== 'function') return null;
+            if (!ytPlayer || typeof ytPlayer.getCurrentTime !== 'function') return detailKeyframe;
         } else {
-            return null;
+            return detailKeyframe;
         }
         if (currentPlaybackKind === 'youtube'
             && currentLoadedYoutubeId && typeof ytPlayer.getVideoData === 'function') {
@@ -2239,19 +2257,19 @@ document.addEventListener('DOMContentLoaded', () => {
             try {
                 playerVideoId = ytPlayer.getVideoData()?.video_id;
             } catch (_) {
-                return null;
+                return detailKeyframe;
             }
-            if (playerVideoId !== currentLoadedYoutubeId) return null;
+            if (playerVideoId !== currentLoadedYoutubeId) return detailKeyframe;
         }
         const playbackTime = playbackTimeOverride === null
             ? currentPlaybackTime()
             : Number(playbackTimeOverride);
-        if (!Number.isFinite(playbackTime) || playbackTime < 0) return null;
+        if (!Number.isFinite(playbackTime) || playbackTime < 0) return detailKeyframe;
 
         // Dùng đúng keyframe mà bộ dò frame lân cận đang chọn, không suy frame_idx từ YouTube × FPS.
         const keyframe = closestTrackedKeyframe(playbackTime);
         if (!keyframe || keyframe.videoId !== currentSubmissionVideoId
-            || !Number.isSafeInteger(keyframe.frameIdx) || keyframe.frameIdx < 0) return null;
+            || !Number.isSafeInteger(keyframe.frameIdx) || keyframe.frameIdx < 0) return detailKeyframe;
         const metadataTime = Number(keyframe.ptsTime);
         const fallbackTime = currentKeyframeMap.fps
             ? keyframe.frameIdx / currentKeyframeMap.fps
@@ -2259,7 +2277,7 @@ document.addEventListener('DOMContentLoaded', () => {
         const localTime = Number.isFinite(metadataTime) && metadataTime >= 0
             ? metadataTime
             : fallbackTime;
-        if (!Number.isFinite(localTime) || localTime < 0) return null;
+        if (!Number.isFinite(localTime) || localTime < 0) return detailKeyframe;
         return { ...keyframe, ptsTime: localTime };
     }
 
@@ -2406,6 +2424,13 @@ document.addEventListener('DOMContentLoaded', () => {
         // Hiển thị panel chi tiết
         // [SỬA LỖI !important]
         detailBox.classList.remove("hidden");
+        // Trên màn hình hẹp/cột phải dài, panel có thể đã mở nhưng
+        // nằm ngoài viewport. Click trực tiếp từ ranking phải đưa nó vào tầm nhìn.
+        if (options.focusPanel === true) {
+            requestAnimationFrame(() => {
+                detailBox.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+            });
+        }
 
         // Cập nhật thông tin panel chi tiết
         document.getElementById('detail-image').src = imagePath;
@@ -2437,9 +2462,34 @@ document.addEventListener('DOMContentLoaded', () => {
             const metaRes = await fetch(`${API_BASE_URL}/metadata`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ image_path: imagePath }), });
             const meta = await metaRes.json();
             if (canonicalKeyframePath(currentDetailPath) !== canonicalKeyframePath(imagePath)) return;
-            document.getElementById('meta-pts').textContent = meta.pts_time ? parseFloat(meta.pts_time).toFixed(2) : "N/A";
+            document.getElementById('meta-pts').textContent =
+                meta.pts_time !== null && meta.pts_time !== undefined
+                    ? parseFloat(meta.pts_time).toFixed(2) : "N/A";
             document.getElementById('meta-idx').textContent =
                 meta.frame_idx !== null && meta.frame_idx !== undefined ? meta.frame_idx : "N/A";
+
+            // Embedding-only mode vẫn phải chọn/nộp được dù chưa có file video.
+            // Dùng metadata của result làm keyframe hiện tại và mở panel submit.
+            const changedSubmissionVideo = currentSubmissionVideoId !== videoId_from_path;
+            currentSubmissionVideoId = videoId_from_path;
+            if (changedSubmissionVideo) resetSubmissionForms();
+            submissionPanel.classList.remove('hidden');
+            await loadKeyframeMap(videoId_from_path);
+            if (canonicalKeyframePath(currentDetailPath) !== canonicalKeyframePath(imagePath)) return;
+            const selectedTime = Number(meta.pts_time);
+            const selectedFrameIdx = Number(meta.frame_idx);
+            currentPlaybackKeyframe = {
+                videoId: videoId_from_path,
+                frameN: Number(meta.n ?? selectedFrameIdx),
+                frameIdx: selectedFrameIdx,
+                ptsTime: selectedTime,
+                path: imagePath,
+            };
+            currentVideoTimeSpan.textContent = Number.isFinite(selectedTime)
+                ? selectedTime.toFixed(2) : "N/A";
+            currentFrameIndexSpan.textContent = Number.isSafeInteger(selectedFrameIdx)
+                ? selectedFrameIdx : "N/A";
+            updateSubmissionUIVisibility();
             if (meta.playback_url) {
                 const metadataTime = meta.pts_time === null || meta.pts_time === undefined
                     ? NaN
@@ -2461,13 +2511,16 @@ document.addEventListener('DOMContentLoaded', () => {
                     }
                 ); // Kết quả search tự phát; frame lân cận chỉ tua và giữ play/pause hiện tại.
             } else {
-                // Nếu ảnh này không có video, tắt player (nếu đang mở)
+                // Thiếu local video lẫn URL YouTube chỉ ẩn player. Detail và
+                // submission vẫn phải hiện để xem metadata/nộp embedding-only.
                 closeVideoPlayerButton.click();
             }
         } catch (e) {
             if (canonicalKeyframePath(currentDetailPath) !== canonicalKeyframePath(imagePath)) return;
             console.error("Lỗi lấy metadata:", e);
-            closeVideoPlayerButton.click(); // Tắt player nếu có lỗi
+            document.getElementById('meta-pts').textContent = "N/A";
+            document.getElementById('meta-idx').textContent = "N/A";
+            closeVideoPlayerButton.click(); // Chỉ tắt player; không ẩn detail.
         }
     }
     window.showImageDetail = showImageDetail;

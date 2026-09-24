@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>HỆ THỐNG TRUY XUẤT VIDEO MFusion-VR</title>
     <script>try { document.documentElement.dataset.theme = localStorage.getItem('mfusion-theme') === 'dark' ? 'dark' : 'light'; } catch (_) { document.documentElement.dataset.theme = 'light'; }</script>
-    <link rel="stylesheet" href="style.css?v=20260923-5">
+    <link rel="stylesheet" href="style.css?v=20260924-panel-2">
     <link rel="stylesheet" href="share_client.css?v=20260821-1">
     <!-- (THÊM MỚI) API Youtube Player -->
     <script src="https://www.youtube.com/iframe_api"></script>
@@ -47,14 +47,12 @@
             <div class="toolbar-search-mode">
                 <span id="search-mode-label">Phương thức:</span>
                 <div class="search-mode-box" role="radiogroup" aria-labelledby="search-mode-label">
-                    <input type="radio" id="mode-semantic-apple-clip" name="search-mode" value="semantic-apple-clip" checked>
-                    <label for="mode-semantic-apple-clip" title="Semantic search bằng Apple-CLIP đã finetune">Apple-CLIP</label>
                     <input type="radio" id="mode-semantic-jina" name="search-mode" value="semantic-jina">
-                    <label for="mode-semantic-jina" title="Semantic search bằng Jina Embeddings v5">Jina</label>
-                    <input type="radio" id="mode-semantic-jina-hybrid" name="search-mode" value="semantic-jina-hybrid">
-                    <label for="mode-semantic-jina-hybrid" title="Gộp Jina image và caption bằng RRF">Hybrid</label>
+                    <label for="mode-semantic-jina" title="Tìm trên toàn bộ collection bằng Jina">Jina</label>
+                    <input type="radio" id="mode-semantic-jina-hybrid" name="search-mode" value="semantic-jina-hybrid" checked>
+                    <label for="mode-semantic-jina-hybrid" title="Gộp các ranking Jina trên toàn bộ collection bằng RRF">Hybrid</label>
                     <input type="radio" id="mode-traffic" name="search-mode" value="traffic">
-                    <label for="mode-traffic" title="Tìm tình huống giao thông Batch 2 bằng caption và detection">Giao thông</label>
+                    <label for="mode-traffic" title="Jina caption kết hợp metadata detection khi có">Detection</label>
                     <input type="radio" id="mode-ocr" name="search-mode" value="ocr">
                     <label for="mode-ocr" title="Tìm chữ trong khung hình (OCR)">OCR</label>
                     <input type="radio" id="mode-asr" name="search-mode" value="asr">
@@ -95,12 +93,6 @@
                         <!-- Ô nhập text query -->
                         <div class="query-compose">
                             <textarea id="query-input" placeholder="Nhập câu mô tả (tìm ảnh), từ khóa (tìm chữ), hoặc câu hội thoại (tìm lời)..."></textarea>
-                            <div id="apple-translation-box" class="query-expansion-box hidden">
-                                <label for="apple-translation-checkbox" title="Dịch sát nghĩa sang tiếng Anh trước khi encode bằng Apple-CLIP; cần GROQ_API_KEY">
-                                    <input type="checkbox" id="apple-translation-checkbox" checked>
-                                    Dịch sang tiếng Anh (Apple-CLIP)
-                                </label>
-                            </div>
                         </div>
 
                         <!-- Enter trong ô Semantic sẽ tìm câu gốc và đồng thời lấy gợi ý mở rộng;
@@ -194,6 +186,7 @@
                     <h3 id="video-player-title"></h3>
                     <!-- (CẬP NHẬT) <div> này sẽ được API Youtube thay thế -->
                     <div id="youtube-player"></div>
+                    <video id="local-video-player" class="hidden" controls playsinline preload="metadata"></video>
                     
                     <!-- (THÊM MỚI) Panel Thời gian thực -->
                     <div id="real-time-panel" class="real-time-panel hidden">
@@ -346,7 +339,7 @@
     </section>
 
     <script src="submission-store.js?v=20260820-10"></script>
-    <script src="script.js?v=20260924-local-1"></script>
+    <script src="script.js?v=20260924-jina-unified-1"></script>
     <script src="share_client.js?v=20260821-1"></script>
 </body>
 </html>

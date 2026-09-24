@@ -509,9 +509,6 @@ header.slim-header {
 
 /* ===== QUERY EXPANSION: nút "Mở rộng" + chip lựa chọn (bấm chọn 1 cái để search) ===== */
 .query-expansion-box { margin-top: 8px; }
-#apple-translation-box { font-size: 12.5px; color: var(--text-secondary); }
-#apple-translation-box label { display: flex; align-items: center; gap: 6px; cursor: pointer; }
-#apple-translation-checkbox { margin: 0; accent-color: var(--accent); }
 #expand-query-button {
     padding: 7px 14px;
     font-size: 13px;
@@ -885,7 +882,8 @@ header.slim-header {
 }
 #video-player-title::after { content: ' \2922'; font-size: 12px; color: var(--text-muted); }
 #video-player-title:hover { color: var(--accent); }
-#youtube-player { border: none; aspect-ratio: 16 / 9; height: auto; width: 100%; background: #000; border-radius: 8px; }
+#youtube-player,
+#local-video-player { border: none; aspect-ratio: 16 / 9; height: auto; width: 100%; background: #000; border-radius: 8px; }
 .real-time-panel { margin-top: 14px; padding: 12px 16px; background: var(--bg-sunken); border-radius: 8px; border: 1px solid var(--border-light); }
 .real-time-panel h4 { margin-bottom: 8px; color: var(--text-primary); font-size: 14px; font-weight: 700; }
 .real-time-panel p { margin: 5px 0; font-size: 13px; color: var(--text-secondary); }
@@ -998,6 +996,9 @@ header.slim-header {
     width: 100%; background: var(--bg-card); padding: 16px; border-radius: 12px;
     box-shadow: var(--shadow-sm); position: relative; border: 1px solid var(--border-light);
 }
+/* Frame click phải đưa thẻ thông tin lên đầu cột phải. Trước đây video và
+   submission được mở trước nó nên thẻ detail bị đẩy khỏi viewport. */
+#image-detail { order: -1; }
 #detail-image { width: 100%; border-radius: 8px; margin-bottom: 10px; }
 #image-detail h3, #image-detail h4 { margin-bottom: 10px; color: var(--text-primary); font-weight: 700; }
 #image-detail p { margin: 6px 0; line-height: 1.7; font-size: 13.5px; color: var(--text-secondary); }

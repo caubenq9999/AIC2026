@@ -24,6 +24,9 @@ libvlc.dll
 
 keyframes/
 Keyframes/
+artifacts/
+videos/
+video/
 data/
 embedding/
 ocr/

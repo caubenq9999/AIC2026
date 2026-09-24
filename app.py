@@ -2,6 +2,7 @@
 import os
 from pathlib import Path
 from functools import lru_cache
+from html import escape as html_escape
 
 # Mọi đường dẫn mặc định đều neo theo vị trí app.py, không phụ thuộc cwd.
 BASE_DIR = Path(__file__).resolve().parent
@@ -17,6 +18,19 @@ def project_path(environment_variable, *relative_parts):
     return BASE_DIR.joinpath(*relative_parts).resolve()
 
 
+ARTIFACTS_DIR = project_path("AIC_ARTIFACTS_DIR", "artifacts")
+
+
+def canonical_or_legacy_path(environment_variable, canonical_parts, legacy_parts):
+    """Prefer the unified artifact root and retain old layouts during migration."""
+    if os.getenv(environment_variable, "").strip():
+        return project_path(environment_variable)
+    canonical = ARTIFACTS_DIR.joinpath(*canonical_parts).resolve()
+    if canonical.exists():
+        return canonical
+    return BASE_DIR.joinpath(*legacy_parts).resolve()
+
+
 def resolve_ocr_metadata_path():
     """Resolve OCR metadata from an override, directory, or legacy ZIP archive."""
     configured_path = os.getenv("AIC_OCR_METADATA_PATH", "").strip()
@@ -24,6 +38,7 @@ def resolve_ocr_metadata_path():
         return project_path("AIC_OCR_METADATA_PATH")
 
     candidates = (
+        ARTIFACTS_DIR / "metadata",
         BASE_DIR / "ocr" / "metadata_ocr_filtered",
         BASE_DIR / "ocr" / "metadata_ocr_filtered.zip",
         BASE_DIR / "ocr" / "metadata_ocr",
@@ -34,26 +49,6 @@ def resolve_ocr_metadata_path():
             return candidate.resolve()
 
     # Keep the error emitted by load_retrieval_data deterministic and useful.
-    return candidates[0].resolve()
-
-
-def resolve_apple_clip_artifacts_dir():
-    """Accept the canonical path plus common names used when sharing artifacts."""
-    configured_path = os.getenv("AIC_APPLE_CLIP_ARTIFACTS_DIR", "").strip()
-    if configured_path:
-        return project_path("AIC_APPLE_CLIP_ARTIFACTS_DIR")
-
-    candidates = (
-        BASE_DIR / "embedding" / "apple_finetuned",
-        BASE_DIR / "embedding" / "apple_finetune",
-        BASE_DIR / "embedding" / "Apple-finetune",
-        BASE_DIR / "apple_finetuned",
-        BASE_DIR / "apple_finetune",
-        BASE_DIR / "Apple-finetune",
-    )
-    for candidate in candidates:
-        if candidate.is_dir():
-            return candidate.resolve()
     return candidates[0].resolve()
 
 
@@ -73,7 +68,7 @@ import json
 import csv
 import zipfile
 # pyrefly: ignore [missing-import]
-from flask import Flask, request, jsonify, send_from_directory, send_file, g, abort
+from flask import Flask, request, jsonify, send_from_directory, send_file, g, abort, Response
 from dres_gateway import check_evaluations, submit_answer as submit_to_dres
 import gc
 from retrieval_data import (
@@ -83,14 +78,17 @@ from retrieval_data import (
     parse_keyframe_path,
 )
 from semantic_search import (
-    AppleClipTextEncoder,
     JinaTextEncoder,
     ModelUnavailableError,
     ShardedNpyIndex,
-    prepare_npz_archive_cache,
 )
 from search_bm25 import PersistentInvertedBM25, fingerprint_paths
-from traffic_search import TrafficSearchIndex, expanded_query, parse_traffic_query
+from traffic_search import (
+    TrafficSearchIndex,
+    expanded_query,
+    merge_ranked_batches,
+    parse_traffic_query,
+)
 from groq import Groq
 from flask_cors import CORS
 # from rank_bm25 import BM25Okapi # <-- XÓA BỎ (Không dùng thư viện nữa)
@@ -107,49 +105,93 @@ print("--- KHỞI ĐỘNG HỆ THỐNG TRUY VẤN HÌNH ẢNH ---")
 
 # --- 2. CẤU HÌNH ---
 index_name = "aic_ocr_index"
-KEYFRAMES_DIR = project_path("AIC_KEYFRAMES_DIR", "keyframes")
+KEYFRAMES_DIR = canonical_or_legacy_path(
+    "AIC_KEYFRAMES_DIR", ("keyframes",), ("keyframes",)
+)
 OCR_METADATA_PATH = resolve_ocr_metadata_path()
 OCR_TEXT_DIR = project_path(
     "AIC_OCR_TEXT_DIR", "OCR_original_no_LLM", "OCR"
 )
-ASR_METADATA_DIR = project_path("AIC_ASR_METADATA_DIR", "asr", "metadata_asr_clean")
+ASR_METADATA_DIR = canonical_or_legacy_path(
+    "AIC_ASR_METADATA_DIR", ("asr",), ("asr", "metadata_asr_clean")
+)
 YOLO_MODEL_PATH = project_path("AIC_YOLO_MODEL_PATH", "yolov8n.pt")
-JINA_VECTORS_DIR = project_path(
-    "AIC_JINA_VECTORS_DIR", "embedding", "jina", "jina_embeddings_npy"
+COLLECTIONS_DIR = canonical_or_legacy_path(
+    "AIC_COLLECTIONS_DIR", ("collections",), ("captionbatch2_emb",)
 )
-JINA_CAPTION_VECTORS_DIR = project_path(
-    "AIC_JINA_CAPTION_VECTORS_DIR",
-    "embedding",
-    "jina",
-    "caption_embeddings_npy",
-)
-APPLE_CLIP_ARTIFACTS_DIR = resolve_apple_clip_artifacts_dir()
-APPLE_CLIP_CACHE_DIR = project_path(
-    "AIC_APPLE_CLIP_CACHE_DIR", ".cache", "apple_clip_vectors"
-)
+if os.getenv("AIC_JINA_VECTORS_DIR", "").strip():
+    JINA_VECTORS_DIR = project_path("AIC_JINA_VECTORS_DIR")
+elif any(COLLECTIONS_DIR.glob("L*/image_embeddings.npy")):
+    JINA_VECTORS_DIR = COLLECTIONS_DIR
+else:
+    JINA_VECTORS_DIR = (BASE_DIR / "embedding" / "jina" / "jina_embeddings_npy").resolve()
+
+if os.getenv("AIC_JINA_CAPTION_VECTORS_DIR", "").strip():
+    JINA_CAPTION_VECTORS_DIR = project_path("AIC_JINA_CAPTION_VECTORS_DIR")
+elif any(COLLECTIONS_DIR.glob("L*/caption_embeddings.npy")):
+    JINA_CAPTION_VECTORS_DIR = COLLECTIONS_DIR
+else:
+    JINA_CAPTION_VECTORS_DIR = (
+        BASE_DIR / "embedding" / "jina" / "caption_embeddings_npy"
+    ).resolve()
 SEARCH_INDEX_CACHE_DIR = project_path(
     "AIC_SEARCH_INDEX_CACHE_DIR", ".cache", "search_indices"
 )
-TRAFFIC_CAPTION_DIR = project_path(
-    "AIC_TRAFFIC_CAPTION_DIR", "captionbatch2_emb", "Video_N081-N100"
+def resolve_videos_dir():
+    """Use the new ``videos`` folder while preserving the legacy ``video`` path."""
+    configured = os.getenv("AIC_VIDEOS_DIR", "").strip()
+    if configured:
+        configured_path = Path(configured).expanduser()
+        if not configured_path.is_absolute():
+            configured_path = BASE_DIR / configured_path
+        return configured_path.resolve()
+
+    canonical = (ARTIFACTS_DIR / "videos").resolve()
+    if canonical.is_dir():
+        return canonical
+    preferred = (BASE_DIR / "videos").resolve()
+    legacy = (BASE_DIR / "video").resolve()
+    if preferred.is_dir() or not legacy.is_dir():
+        return preferred
+    return legacy
+
+
+# Video local là artifact tùy chọn. Nếu không có MP4 đã giải nén,
+# build_playback_info() sẽ tự fallback về URL YouTube trong metadata.
+VIDEOS_DIR = resolve_videos_dir()
+TRAFFIC_CAPTION_DIR = canonical_or_legacy_path(
+    "AIC_TRAFFIC_CAPTION_DIR", ("collections",), ("captionbatch2_emb",)
 )
-TRAFFIC_DETECTION_PATH = project_path(
+TRAFFIC_DETECTION_PATH = canonical_or_legacy_path(
     "AIC_TRAFFIC_DETECTION_PATH",
-    "detection segmentation",
-    "detection segmentation",
-    "Video_N081-N100_metadata.parquet",
+    ("detections",),
+    ("detection segmentation", "detection segmentation"),
 )
-TRAFFIC_KEYFRAMES_DIR = project_path(
+TRAFFIC_KEYFRAMES_DIR = canonical_or_legacy_path(
     "AIC_TRAFFIC_KEYFRAMES_DIR",
-    "keyframes_batch2",
-    "N081-N100",
-    "keyframes",
+    ("keyframes",),
+    ("keyframes",),
 )
-TRAFFIC_MAP_DIR = project_path(
+TRAFFIC_MAP_DIR = canonical_or_legacy_path(
     "AIC_TRAFFIC_MAP_DIR",
-    "keyframes_batch2",
-    "N081-N100",
-    "map-keyframes",
+    ("keyframes",),
+    ("keyframes",),
+)
+# Chỉ còn là fallback legacy cho vài video chưa được chép video_url vào metadata.
+# Cấu trúc artifact chuẩn không có media-info riêng.
+TRAFFIC_MEDIA_INFO_DIR = project_path(
+    "AIC_TRAFFIC_MEDIA_INFO_DIR", "aic26-b2-media-info", "media-info"
+)
+TRAFFIC_METADATA_DIR = canonical_or_legacy_path(
+    "AIC_TRAFFIC_METADATA_DIR",
+    ("metadata",),
+    ("ocr", "metadata_ocr_filtered", "metadata"),
+)
+TRAFFIC_SEARCH_CACHE_DIR = project_path(
+    "AIC_TRAFFIC_SEARCH_CACHE_DIR", ".cache", "batch2_search"
+)
+TRAFFIC_SEARCH_DIMS = max(
+    32, min(int(os.getenv("AIC_TRAFFIC_SEARCH_DIMS", "128")), 1024)
 )
 SEMANTIC_QUERY_CACHE_SIZE = max(
     0, int(os.getenv("AIC_SEMANTIC_QUERY_CACHE_SIZE", "256"))
@@ -157,30 +199,19 @@ SEMANTIC_QUERY_CACHE_SIZE = max(
 SEMANTIC_RESULT_CACHE_SIZE = max(
     0, int(os.getenv("AIC_SEMANTIC_RESULT_CACHE_SIZE", "128"))
 )
-if os.getenv("AIC_APPLE_CLIP_CHECKPOINT_PATH", "").strip():
-    APPLE_CLIP_CHECKPOINT_PATH = project_path("AIC_APPLE_CLIP_CHECKPOINT_PATH")
-else:
-    APPLE_CLIP_CHECKPOINT_PATH = (
-        APPLE_CLIP_ARTIFACTS_DIR / "apple_clip_epoch_5_inference.pt"
-    )
-if not APPLE_CLIP_CHECKPOINT_PATH.is_file():
-    # Cho phép chạy ngay với checkpoint training cũ; bản inference-only được
-    # ưu tiên vì không chứa hơn 7 GB optimizer state không dùng lúc retrieval.
-    APPLE_CLIP_CHECKPOINT_PATH = APPLE_CLIP_ARTIFACTS_DIR / "epoch_5.pt"
-
-
 LOCAL_VIDEO_ID_PATTERN = re.compile(r"^[A-Z]\d{2,3}[-_]V\d+$", re.IGNORECASE)
 BROWSER_VIDEO_EXTENSIONS = {".mp4", ".webm", ".mov", ".m4v"}
 
 
 def build_local_video_index(videos_dir):
-    """Index browser-playable local videos by internal ID, e.g. L21_V001."""
+    """Index extracted videos and MP4 members kept inside downloaded ZIPs."""
     videos_dir = Path(videos_dir)
     if not videos_dir.is_dir():
         print(f"CẢNH BÁO: Không tìm thấy folder video local {videos_dir}.")
         return {}
 
     index = {}
+    # File đã giải nén được ưu tiên nếu cùng video cũng xuất hiện trong ZIP.
     for video_path in sorted(videos_dir.rglob("*")):
         if (
             not video_path.is_file()
@@ -197,7 +228,34 @@ def build_local_video_index(videos_dir):
                 f"giữ {index[video_id]}, bỏ qua {resolved_path}."
             )
             continue
-        index[video_id] = resolved_path
+        index[video_id] = {
+            "kind": "file",
+            "path": resolved_path,
+            "size": resolved_path.stat().st_size,
+        }
+
+    for archive_path in sorted(videos_dir.rglob("*.zip")):
+        try:
+            with zipfile.ZipFile(archive_path) as archive:
+                for member in archive.infolist():
+                    if member.is_dir():
+                        continue
+                    member_path = Path(member.filename)
+                    if member_path.suffix.lower() not in BROWSER_VIDEO_EXTENSIONS:
+                        continue
+                    video_id = member_path.stem.upper()
+                    if not LOCAL_VIDEO_ID_PATTERN.fullmatch(video_id):
+                        continue
+                    if video_id in index:
+                        continue
+                    index[video_id] = {
+                        "kind": "zip",
+                        "path": archive_path.resolve(),
+                        "member": member.filename,
+                        "size": int(member.file_size),
+                    }
+        except (OSError, zipfile.BadZipFile) as exc:
+            print(f"CẢNH BÁO: Không đọc được ZIP video {archive_path}: {exc}")
     return index
 
 
@@ -241,6 +299,7 @@ except Exception as e:
 retrieval_data = load_retrieval_data(
     OCR_METADATA_PATH,
     KEYFRAMES_DIR,
+    allowed_collections={f"L{number}" for number in range(21, 31)},
 )
 image_records = retrieval_data.image_records
 metadata_cache = retrieval_data.metadata_cache
@@ -257,10 +316,16 @@ try:
         detection_path=TRAFFIC_DETECTION_PATH,
         keyframes_dir=TRAFFIC_KEYFRAMES_DIR,
         map_dir=TRAFFIC_MAP_DIR,
+        media_info_dir=TRAFFIC_MEDIA_INFO_DIR,
+        metadata_dir=TRAFFIC_METADATA_DIR,
+        cache_dir=TRAFFIC_SEARCH_CACHE_DIR,
+        search_dims=TRAFFIC_SEARCH_DIMS,
     )
+    video_url_cache.update(traffic_search_index.video_url_by_id)
     print(
-        f"Traffic Search sẵn sàng: {traffic_search_index.size:,} frames / "
-        f"{traffic_search_index.video_count} videos."
+        f"Caption collection index sẵn sàng: {traffic_search_index.size:,} frames / "
+        f"{traffic_search_index.video_count} videos / "
+        f"{len(traffic_search_index.shard_names)} embedding shards."
     )
 except Exception as exc:
     traffic_search_reason = f"{type(exc).__name__}: {exc}"
@@ -323,19 +388,34 @@ else:
 ocr_data = image_records
 
 # Hai index Jina dùng exact search trên NPY mmap và chung một thứ tự metadata.
+jina_image_shard_filename = (
+    "image_embeddings.npy"
+    if any(JINA_VECTORS_DIR.glob("L*/image_embeddings.npy")) else None
+)
 jina_semantic_index = ShardedNpyIndex(
     "Jina",
     JINA_VECTORS_DIR,
     image_records,
     expected_dimension=1024,
+    shard_filename=jina_image_shard_filename,
 )
 jina_caption_index = None
 jina_caption_index_reason = "Caption embeddings chưa được tạo."
 try:
-    expected_caption_shards = {f"L{number}.npy" for number in range(21, 31)}
-    present_caption_shards = {
-        path.name for path in JINA_CAPTION_VECTORS_DIR.glob("L*.npy")
-    }
+    jina_caption_shard_filename = (
+        "caption_embeddings.npy"
+        if any(JINA_CAPTION_VECTORS_DIR.glob("L*/caption_embeddings.npy")) else None
+    )
+    expected_caption_shards = {f"L{number}" for number in range(21, 31)}
+    if jina_caption_shard_filename:
+        present_caption_shards = {
+            path.parent.name
+            for path in JINA_CAPTION_VECTORS_DIR.glob("L*/caption_embeddings.npy")
+        }
+    else:
+        present_caption_shards = {
+            path.stem for path in JINA_CAPTION_VECTORS_DIR.glob("L*.npy")
+        }
     missing_caption_shards = sorted(expected_caption_shards - present_caption_shards)
     if missing_caption_shards:
         raise FileNotFoundError(
@@ -348,6 +428,7 @@ try:
         JINA_CAPTION_VECTORS_DIR,
         image_records,
         expected_dimension=1024,
+        shard_filename=jina_caption_shard_filename,
     )
     jina_caption_index_reason = (
         f"Đã map {jina_caption_index.ntotal:,} caption vectors."
@@ -358,33 +439,6 @@ except (FileNotFoundError, ValueError) as exc:
     print(f"Caption search chưa sẵn sàng: {exc}")
 jina_text_encoder = JinaTextEncoder(device=device)
 print(f"Đã map Jina image: {jina_semantic_index.ntotal:,} vector, 1024 chiều.")
-
-apple_clip_index = None
-apple_clip_index_reason = "Apple-CLIP artifacts chưa được chuẩn bị."
-try:
-    apple_cache_dir = prepare_npz_archive_cache(
-        APPLE_CLIP_ARTIFACTS_DIR,
-        APPLE_CLIP_CACHE_DIR,
-        image_records,
-        expected_dimension=1024,
-    )
-    apple_clip_index = ShardedNpyIndex(
-        "Apple-CLIP Finetune",
-        apple_cache_dir,
-        image_records,
-        expected_dimension=1024,
-    )
-    apple_clip_index_reason = (
-        f"Đã map {apple_clip_index.ntotal:,} Apple-CLIP vectors."
-    )
-    print(apple_clip_index_reason)
-except (FileNotFoundError, ValueError, OSError, zipfile.BadZipFile) as exc:
-    apple_clip_index_reason = str(exc)
-    print(f"Apple-CLIP search chưa sẵn sàng: {exc}")
-apple_clip_text_encoder = AppleClipTextEncoder(
-    checkpoint_path=APPLE_CLIP_CHECKPOINT_PATH,
-    device=device,
-)
 
 print("Loading ASR metadata...")
 asr_data, _, asr_video_map = load_asr_metadata(ASR_METADATA_DIR)
@@ -593,37 +647,6 @@ def expand_query_with_groq(query_text):
         return []
 
 
-APPLE_CLIP_TRANSLATION_PROMPT = """Translate the Vietnamese visual-search query below into concise, natural English for CLIP text-to-image retrieval.
-
-Rules:
-- Preserve every visible object, person, action, color, count, spatial relation, proper name and on-screen text.
-- Do not expand, explain, infer or add details.
-- If the input is already English, return it unchanged.
-- Return only the translated query, without quotes or markdown.
-
-Query: {query}"""
-
-
-def translate_query_for_apple_clip(query_text):
-    """Return ``(query_used, translated, reason)`` for Apple-CLIP retrieval."""
-    if not groq_client:
-        return query_text, False, "Chưa dịch: thiếu GROQ_API_KEY"
-    try:
-        translated = groq_generate(
-            APPLE_CLIP_TRANSLATION_PROMPT.format(query=query_text)
-        ).strip()
-        translated = re.sub(
-            r"^```(?:text)?|```$", "", translated, flags=re.MULTILINE
-        ).strip()
-        translated = translated.strip('"').strip()
-        if not translated:
-            return query_text, False, "Chưa dịch: Groq trả kết quả rỗng"
-        print(f"[Apple-CLIP Translate] '{query_text}' -> '{translated}'")
-        return translated, translated != query_text, ""
-    except Exception as exc:
-        print(f"Lỗi dịch query Apple-CLIP: {exc}")
-        return query_text, False, "Dịch lỗi; đã dùng query gốc"
-
 # (THÊM MỚI) API /expand_query - chỉ sinh 3 biến thể để người dùng chọn, KHÔNG tự search.
 # Trước đây tick checkbox là tự động search cả 3 biến thể + gộp RRF (người dùng không biết đã tìm
 # bằng câu gì). Giờ tách riêng: bấm nút "Mở rộng" -> hiện 3 lựa chọn -> người dùng bấm chọn 1 cái ->
@@ -755,21 +778,13 @@ def asr_candidates(query_text, search_size):
 
 
 SEMANTIC_MODEL_LABELS = {
-    "apple-clip": "Apple-CLIP Finetune",
-    "jina": "Jina Embeddings v5",
-    "jina-hybrid": "Jina Image + Caption (RRF)",
+    "jina": "Jina Embeddings v5 · Tất cả collection",
+    "jina-hybrid": "Jina Hybrid · Tất cả collection (RRF)",
 }
 
 
 def _encode_semantic_query_uncached(query_text, semantic_model):
-    if semantic_model == "apple-clip":
-        # GPU 6-8 GB không đủ để giữ đồng thời hai encoder lớn.
-        if jina_text_encoder.is_loaded:
-            jina_text_encoder.unload()
-        return apple_clip_text_encoder.encode(query_text)
     if semantic_model in {"jina", "jina-hybrid"}:
-        if apple_clip_text_encoder.is_loaded:
-            apple_clip_text_encoder.unload()
         return jina_text_encoder.encode(query_text)
     raise ValueError(
         f"semantic_model không hợp lệ: {semantic_model!r}. "
@@ -794,10 +809,6 @@ def encode_semantic_query(query_text, semantic_model):
 
 
 def search_semantic_vectors(semantic_model, query_vector, top_k):
-    if semantic_model == "apple-clip":
-        if apple_clip_index is None:
-            raise ModelUnavailableError(apple_clip_index_reason)
-        return apple_clip_index.search(query_vector, top_k)
     if semantic_model == "jina":
         return jina_semantic_index.search(query_vector, top_k)
     if semantic_model == "jina-hybrid":
@@ -850,33 +861,20 @@ def search_semantic_text(query_text, semantic_model, top_k):
 @app.route('/semantic_models', methods=['GET'])
 def semantic_models_status():
     jina_available, jina_reason = jina_text_encoder.availability()
-    apple_encoder_available, apple_encoder_reason = (
-        apple_clip_text_encoder.availability()
-    )
-    apple_available = apple_encoder_available and apple_clip_index is not None
-    apple_reason = (
-        apple_clip_index_reason if apple_encoder_available else apple_encoder_reason
-    )
     caption_available = jina_available and jina_caption_index is not None
     caption_reason = (
         jina_caption_index_reason if jina_available else jina_reason
     )
     return jsonify({
         "models": {
-            "apple-clip": {
-                "label": SEMANTIC_MODEL_LABELS["apple-clip"],
-                "available": apple_available,
-                "dimension": 1024,
-                "vectors": (
-                    apple_clip_index.ntotal if apple_clip_index is not None else 0
-                ),
-                "reason": apple_reason,
-            },
             "jina": {
                 "label": SEMANTIC_MODEL_LABELS["jina"],
                 "available": jina_available,
                 "dimension": jina_semantic_index.d,
-                "vectors": jina_semantic_index.ntotal,
+                "vectors": jina_semantic_index.ntotal + (
+                    traffic_search_index.size
+                    if traffic_search_index is not None else 0
+                ),
                 "reason": jina_reason,
             },
             "jina-hybrid": {
@@ -884,7 +882,8 @@ def semantic_models_status():
                 "available": caption_available,
                 "dimension": 1024,
                 "vectors": (
-                    jina_caption_index.ntotal if jina_caption_index is not None else 0
+                    (jina_caption_index.ntotal if jina_caption_index is not None else 0)
+                    + (traffic_search_index.size if traffic_search_index is not None else 0)
                 ),
                 "reason": caption_reason,
             },
@@ -949,6 +948,24 @@ def search():
                 })
             return jsonify({"results": final_results, "summary": summary})
 
+        if (
+            traffic_search_index is not None
+            and video_id_query in traffic_search_index.rows_by_video
+        ):
+            rows = traffic_search_index.rows_by_video[video_id_query]
+            results = [{
+                "path": traffic_search_index.web_paths[row],
+                "videoId": video_id_query,
+                "score": float(traffic_search_index.timestamps[row]),
+                "pts_time": float(traffic_search_index.timestamps[row]),
+                "frame_idx": int(traffic_search_index.frame_indices[row]),
+                "batch": "batch2",
+            } for row in rows[:top_k]]
+            summary = {video_id_query: len(results)}
+            if group_results:
+                return jsonify({"results": {video_id_query: results}, "summary": summary})
+            return jsonify({"results": results, "summary": summary})
+
         # === (KẾT THÚC LOGIC MỚI) ===
         
         # Nếu không phải là Video ID, chạy logic tìm kiếm semantic CŨ
@@ -960,13 +977,6 @@ def search():
         search_query = query_text
         query_translated = False
         translation_reason = ""
-        if semantic_model == "apple-clip":
-            if bool(data.get("translate_query", True)):
-                search_query, query_translated, translation_reason = (
-                    translate_query_for_apple_clip(query_text)
-                )
-            else:
-                translation_reason = "Dịch Apple-CLIP đang tắt"
 
         pool_k = top_k * 5 if group_results else top_k
 
@@ -979,8 +989,7 @@ def search():
             if int(i) >= 0:
                 semantic_score_by_idx[int(i)] = float(dist)
 
-        results = []
-        summary = {}
+        batch1_results = []
 
         for i in ordered_indices:
             original_path = image_records[int(i)]['path']
@@ -992,13 +1001,38 @@ def search():
                 meta = metadata_cache.get(video_id, {}).get(frame_n_int, {})
                 pts_time = meta.get('pts_time', 0) if meta and meta.get('pts_time') else 0
 
-                results.append({
+                batch1_results.append({
                     "path": web_path,
                     "videoId": video_id,
                     "score": semantic_score_by_idx.get(i, 0.0),
-                    "pts_time": float(pts_time)
+                    "pts_time": float(pts_time),
+                    "batch": "batch1",
                 })
-                summary[video_id] = summary.get(video_id, 0) + 1
+
+        batch2_results = []
+        if semantic_model in {"jina", "jina-hybrid"} and traffic_search_index is not None:
+            query_vector = _cached_semantic_query_vector(search_query, semantic_model)
+            batch2_results = traffic_search_index.search(
+                query_text,
+                query_vector,
+                top_k=min(traffic_search_index.size, pool_k),
+            )
+            for item in batch2_results:
+                item["batch"] = "batch2"
+
+        # Scores của hai kho không cùng phân phối (Batch 1 có thể là cosine
+        # hoặc Hybrid RRF; Batch 2 dùng caption semantic + detection). Trộn
+        # theo rank giúp hai batch cùng có cơ hội xuất hiện mà không cần giả
+        # định hai raw score có cùng thang đo.
+        if batch2_results:
+            results = merge_ranked_batches(batch1_results, batch2_results)
+        else:
+            results = batch1_results
+
+        summary = {}
+        for item in results:
+            video_id = item["videoId"]
+            summary[video_id] = summary.get(video_id, 0) + 1
 
         sorted_summary = dict(sorted(summary.items(), key=lambda item: item[1], reverse=True))
 
@@ -1023,6 +1057,7 @@ def search():
                 "search_query": search_query,
                 "query_translated": query_translated,
                 "translation_reason": translation_reason,
+                "searched_batches": ["batch1", "batch2"] if batch2_results else ["batch1"],
             })
         else:
             final_results = results[:top_k]
@@ -1033,6 +1068,7 @@ def search():
                 "search_query": search_query,
                 "query_translated": query_translated,
                 "translation_reason": translation_reason,
+                "searched_batches": ["batch1", "batch2"] if batch2_results else ["batch1"],
             })
 
     except ModelUnavailableError as e:
@@ -1126,8 +1162,6 @@ def search_similar_image():
         # --- KẾT THÚC BƯỚC TIỀN XỬ LÝ ---
 
         # Ảnh query và toàn bộ keyframe đều dùng cùng Jina retrieval space.
-        if apple_clip_text_encoder.is_loaded:
-            apple_clip_text_encoder.unload()
         query_vector = jina_text_encoder.encode_image(target_image)
 
         # Dọn dẹp sau Jina inference
@@ -1373,8 +1407,6 @@ def search_trake_02():
         for i, q in enumerate(event_queries):
             print(f"  [Sự kiện {i + 1}/{n_events}] '{q}'")
 
-        if apple_clip_text_encoder.is_loaded:
-            apple_clip_text_encoder.unload()
         query_vectors = jina_text_encoder.encode_texts(event_queries)
         for event_index in range(n_events):
             distances, indices = search_semantic_vectors(
@@ -1513,8 +1545,6 @@ def search_trake_image():
         # Key: video_id, Value: count (for summary)
         summary_counter = collections.defaultdict(int)
         
-        if apple_clip_text_encoder.is_loaded:
-            apple_clip_text_encoder.unload()
         for img_index, file in enumerate(image_files):
                 # Xử lý từng ảnh
                 if file.filename == '': continue
@@ -1713,6 +1743,7 @@ def search_fusion():
         # --- 1. Nhánh Jina Hybrid (Jina image + Jina caption) ---
         if query_jina:
             try:
+                batch1_jina_keys = []
                 _, indices = search_semantic_text(
                     query_jina, "jina-hybrid", pool_k
                 )
@@ -1724,9 +1755,40 @@ def search_fusion():
                     if web_path and frame_n_str:
                         frame_n_int = int(frame_n_str)
                         key = (video_id, frame_n_int)
-                        jina_ranked_keys.append(key)
+                        batch1_jina_keys.append(key)
                         meta = metadata_cache.get(video_id, {}).get(frame_n_int, {})
                         register(key, web_path, video_id, meta.get('pts_time', 0) if meta else 0, "JINA_HYBRID")
+
+                batch2_jina_keys = []
+                if traffic_search_index is not None:
+                    query_vector = _cached_semantic_query_vector(
+                        query_jina, "jina-hybrid"
+                    )
+                    batch2_hits = traffic_search_index.search(
+                        query_jina,
+                        query_vector,
+                        top_k=min(traffic_search_index.size, pool_k),
+                    )
+                    for item in batch2_hits:
+                        frame_idx = int(item["frame_idx"])
+                        key = (item["videoId"], frame_idx)
+                        batch2_jina_keys.append(key)
+                        register(
+                            key,
+                            item["path"],
+                            item["videoId"],
+                            item["pts_time"],
+                            "JINA_BATCH2",
+                        )
+
+                # Interleave both batches before this unified Jina branch is
+                # fused with OCR/ASR, so Batch 2 does not count as an extra
+                # modality and accidentally double weight_jina.
+                for rank in range(max(len(batch1_jina_keys), len(batch2_jina_keys))):
+                    if rank < len(batch1_jina_keys):
+                        jina_ranked_keys.append(batch1_jina_keys[rank])
+                    if rank < len(batch2_jina_keys):
+                        jina_ranked_keys.append(batch2_jina_keys[rank])
             except Exception as e:
                 print(f"[Fusion] Lỗi nhánh Jina Hybrid: {e}")
 
@@ -1825,7 +1887,7 @@ def search_fusion():
 
 @app.route('/search_traffic', methods=['POST'])
 def search_traffic():
-    """Batch 2 N081-N100: caption semantic + vehicle detection reranking."""
+    """Batch 2 auto-discovered semantic search + optional detection reranking."""
     if traffic_search_index is None:
         return jsonify({"error": traffic_search_reason or "Traffic Search chưa sẵn sàng."}), 503
     try:
@@ -2325,10 +2387,6 @@ def health():
     """Readiness check without forcing either lazy semantic model to load."""
     jina_available, jina_reason = jina_text_encoder.availability()
     hybrid_available = jina_available and jina_caption_index is not None
-    apple_encoder_available, apple_encoder_reason = (
-        apple_clip_text_encoder.availability()
-    )
-    apple_available = apple_encoder_available and apple_clip_index is not None
     return jsonify({
         "status": "ok" if hybrid_available else "degraded",
         "device": device,
@@ -2343,19 +2401,27 @@ def health():
             "reason": traffic_search_reason,
             "frames": traffic_search_index.size if traffic_search_index is not None else 0,
             "videos": traffic_search_index.video_count if traffic_search_index is not None else 0,
+            "shards": (
+                traffic_search_index.shard_names
+                if traffic_search_index is not None else []
+            ),
+            "detection_frames": (
+                traffic_search_index.detection_count
+                if traffic_search_index is not None else 0
+            ),
+            "keyframes_available": (
+                traffic_search_index.keyframes_available
+                if traffic_search_index is not None else False
+            ),
+            "maps_available": (
+                traffic_search_index.maps_available
+                if traffic_search_index is not None else False
+            ),
         },
         "jina": {"available": jina_available, "reason": jina_reason},
         "jina_hybrid": {
             "available": hybrid_available,
             "reason": jina_caption_index_reason if jina_available else jina_reason,
-        },
-        "apple_clip": {
-            "available": apple_available,
-            "reason": (
-                apple_clip_index_reason
-                if apple_encoder_available
-                else apple_encoder_reason
-            ),
         },
         "ocr": {"available": bm25_ocr_index is not None},
         "asr_for_fusion": {"available": bm25_asr_index is not None},
@@ -2370,15 +2436,102 @@ def serve_submission_builder():
     return send_from_directory(str(BASE_DIR), 'submission-builder.html')
 @app.route('/videos/<video_id>')
 def serve_local_video(video_id):
-    video_path = local_video_index.get(str(video_id).upper())
-    if video_path is None or not video_path.is_file():
+    asset = local_video_index.get(str(video_id).upper())
+    if asset is None:
         abort(404)
-    # conditional=True enables byte-range responses so browser seeking works.
-    return send_file(str(video_path), conditional=True)
+    asset_path = asset["path"]
+    if not asset_path.is_file():
+        abort(404)
+    if asset["kind"] == "file":
+        # conditional=True enables byte-range responses so browser seeking works.
+        return send_file(str(asset_path), conditional=True)
+
+    total_size = int(asset["size"])
+    range_header = request.headers.get("Range", "").strip()
+    start, end, status = 0, max(0, total_size - 1), 200
+    if range_header:
+        match = re.fullmatch(r"bytes=(\d*)-(\d*)", range_header)
+        if match is None or (not match.group(1) and not match.group(2)):
+            return Response(status=416, headers={"Content-Range": f"bytes */{total_size}"})
+        if match.group(1):
+            start = int(match.group(1))
+            end = int(match.group(2)) if match.group(2) else total_size - 1
+        else:
+            suffix_length = int(match.group(2))
+            start = max(0, total_size - suffix_length)
+            end = total_size - 1
+        if start >= total_size or start > end:
+            return Response(status=416, headers={"Content-Range": f"bytes */{total_size}"})
+        end = min(end, total_size - 1)
+        status = 206
+
+    length = max(0, end - start + 1)
+
+    def generate_zip_member():
+        with zipfile.ZipFile(asset_path) as archive:
+            with archive.open(asset["member"], "r") as stream:
+                stream.seek(start)
+                remaining = length
+                while remaining > 0:
+                    chunk = stream.read(min(1024 * 1024, remaining))
+                    if not chunk:
+                        break
+                    remaining -= len(chunk)
+                    yield chunk
+
+    headers = {
+        "Accept-Ranges": "bytes",
+        "Content-Length": str(length),
+        "Cache-Control": "private, max-age=3600",
+    }
+    if status == 206:
+        headers["Content-Range"] = f"bytes {start}-{end}/{total_size}"
+    return Response(
+        generate_zip_member(),
+        status=status,
+        mimetype="video/mp4",
+        headers=headers,
+        direct_passthrough=True,
+    )
 @app.route('/batch2-keyframes/<path:path>')
 def serve_batch2_keyframes(path):
-    mimetype = "image/webp" if Path(path).suffix.lower() == ".webp" else None
-    return send_from_directory(str(TRAFFIC_KEYFRAMES_DIR), path, mimetype=mimetype)
+    logical_path = f"/batch2-keyframes/{path}"
+    asset = (
+        traffic_search_index.image_asset_for_path(logical_path)
+        if traffic_search_index is not None else None
+    )
+    if asset is not None:
+        if asset["kind"] == "file":
+            return send_file(
+                str(asset["path"]),
+                mimetype=asset["mimetype"],
+                conditional=True,
+            )
+        return Response(
+            asset["data"],
+            mimetype=asset["mimetype"],
+            headers={"Cache-Control": "private, max-age=3600"},
+        )
+
+    # Embedding-only smoke mode: preserve the logical image URL so metadata
+    # lookup/click still works, but render a useful card instead of a broken img.
+    parts = Path(path).parts
+    video_id = parts[-2] if len(parts) >= 2 else "Batch 2"
+    frame_name = Path(parts[-1]).stem if parts else "?"
+    safe_video_id = html_escape(video_id)
+    safe_frame_name = html_escape(frame_name)
+    placeholder = f'''<svg xmlns="http://www.w3.org/2000/svg" width="640" height="360" viewBox="0 0 640 360">
+      <rect width="640" height="360" fill="#172635"/>
+      <rect x="28" y="28" width="584" height="304" rx="18" fill="#22394d" stroke="#3d5b70"/>
+      <text x="50%" y="43%" text-anchor="middle" fill="#79d4ff" font-family="Arial,sans-serif" font-size="30" font-weight="700">{safe_video_id}</text>
+      <text x="50%" y="56%" text-anchor="middle" fill="#ffffff" font-family="Arial,sans-serif" font-size="22">frame {safe_frame_name}</text>
+      <text x="50%" y="70%" text-anchor="middle" fill="#a9bac7" font-family="Arial,sans-serif" font-size="16">Embedding-only · chưa tải keyframe</text>
+    </svg>'''
+    return Response(
+        placeholder,
+        mimetype="image/svg+xml",
+        headers={"Cache-Control": "private, max-age=300"},
+    )
 @app.route('/<path:path>')
 def serve_static(path):
     if path not in PUBLIC_STATIC_FILES:

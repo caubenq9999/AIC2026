@@ -1,15 +1,36 @@
 {
-  "schema_version": 1,
+  "schema_version": 2,
   "dataset": "AIC2026",
-  "total_records": 317961,
+  "artifact_layout": "unified-collections-v1",
+  "artifact_root": "artifacts",
+  "total_frames": 817929,
   "embedding_dimension": 1024,
-  "jina_model": "jinaai/jina-embeddings-v5-omni-small",
-  "jina_revision": "05f4151c87083f204159bfa15e53fdb0320ffef1",
-  "apple_clip_model": "ViT-H-14-378-quickgelu",
-  "apple_clip_checkpoint_epoch": 5,
-  "ocr_metadata": {
-    "records": 317961,
-    "blank_texts": 17308
+  "embedding_model": {
+    "id": "jinaai/jina-embeddings-v5-omni-small",
+    "revision": "05f4151c87083f204159bfa15e53fdb0320ffef1",
+    "normalized": true,
+    "dtype": "float32"
+  },
+  "modalities": {
+    "image_embeddings": {
+      "frames": 317961,
+      "collections": [
+        "L21",
+        "L22",
+        "L23",
+        "L24",
+        "L25",
+        "L26",
+        "L27",
+        "L28",
+        "L29",
+        "L30"
+      ]
+    },
+    "caption_embeddings": {
+      "frames": 817929,
+      "coverage": "all-current-collections"
+    }
   },
   "collections": {
     "L21": 26565,
@@ -21,16 +42,35 @@
     "L27": 8778,
     "L28": 16359,
     "L29": 15900,
-    "L30": 13619
+    "L30": 13619,
+    "M01": 26108,
+    "M02": 28719,
+    "M03": 30695,
+    "M04": 32043,
+    "M05": 33346,
+    "M06": 33351,
+    "M07": 35786,
+    "M08-M09": 70602,
+    "M10": 33287,
+    "N001-N010": 17959,
+    "N011-N020": 19112,
+    "N021-N040": 35753,
+    "N041-N050": 16432,
+    "N051-N060": 16770,
+    "N061-N080": 34311,
+    "N081-N100": 35694
   },
   "paths": {
-    "keyframes": "keyframes",
-    "ocr_metadata": "ocr/metadata_ocr_filtered",
-    "asr_metadata": "asr/metadata_asr_clean",
-    "jina_image_vectors": "embedding/jina/jina_embeddings_npy",
-    "jina_caption_vectors": "embedding/jina/caption_embeddings_npy",
-    "apple_clip_artifacts": "embedding/apple_finetuned",
-    "apple_clip_checkpoint": "embedding/apple_finetuned/apple_clip_epoch_5_inference.pt",
-    "yolo_model": "yolov8n.pt"
-  }
+    "collections": "artifacts/collections",
+    "metadata": "artifacts/metadata",
+    "keyframes": "artifacts/keyframes",
+    "asr": "artifacts/asr",
+    "detections": "artifacts/detections",
+    "videos": "artifacts/videos"
+  },
+  "legacy_layout_supported": true,
+  "notes": [
+    "Batch 1 and Batch 2 are release labels only; all collections use the same artifact schema.",
+    "Collections without image embeddings remain searchable through Jina caption embeddings."
+  ]
 }

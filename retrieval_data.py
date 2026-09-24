@@ -101,6 +101,7 @@ def load_retrieval_data(
     metadata_source: str | Path,
     keyframes_dir: str | Path,
     expected_rows: int | None = None,
+    allowed_collections: set[str] | None = None,
 ) -> RetrievalData:
     """Load OCR/keyframe metadata and build the lookup tables used by Flask."""
 
@@ -119,6 +120,9 @@ def load_retrieval_data(
 
         for source_record in document:
             video_id = str(source_record.get("video_id", "")).upper()
+            collection = re.split(r"[-_]", video_id, maxsplit=1)[0]
+            if allowed_collections is not None and collection not in allowed_collections:
+                continue
             if not VIDEO_ID_PATTERN.fullmatch(video_id):
                 raise ValueError(f"video_id không hợp lệ trong metadata: {video_id!r}")
 
