@@ -11,13 +11,17 @@ from urllib.parse import quote, urlsplit
 import requests
 
 
-DEFAULT_DRES_BASE_URL = "https://eventretrieval.oj.io.vn"
+# DRES hiện tại do BTC cung cấp. Có thể override bằng BTC_API_BASE_URL nếu
+# ban tổ chức đổi host ở một đợt thi sau.
+DEFAULT_DRES_BASE_URL = "https://eventretrieval.one"
 CONNECT_TIMEOUT = 3
 READ_TIMEOUT = 12
 
 
 def base_url():
     value = os.getenv("BTC_API_BASE_URL", DEFAULT_DRES_BASE_URL).strip().rstrip("/")
+    if not value:
+        raise ValueError("BTC_API_BASE_URL đang rỗng.")
     parsed = urlsplit(value)
     local_http = parsed.scheme == "http" and parsed.hostname in {"localhost", "127.0.0.1"}
     if (parsed.scheme != "https" and not local_http) or not parsed.hostname or parsed.username or parsed.password or parsed.path or parsed.query or parsed.fragment:
@@ -47,15 +51,26 @@ def check_evaluations(session_id, evaluation_id=""):
         return {"status": "error", "message": "Thiếu sessionID."}
     try:
         server = base_url()
+    except ValueError as exc:
+        return {"status": "error", "message": str(exc)}
+    try:
         response = requests.get(
             f"{server}/api/v2/client/evaluation/list",
             params={"session": session_id},
             timeout=(CONNECT_TIMEOUT, READ_TIMEOUT),
             allow_redirects=False,
         )
-    except (requests.RequestException, ValueError):
+    except requests.RequestException:
         return {"status": "error", "message": "Không kết nối được DRES; kiểm tra địa chỉ hoặc mạng."}
     body = _json_or_none(response)
+    if 300 <= response.status_code < 400:
+        return {
+            "status": "error",
+            "message": (
+                "DRES host đang chuyển hướng sang domain khác. Hệ thống không "
+                "chuyển tiếp session token; hãy cập nhật BTC_API_BASE_URL theo BTC."
+            ),
+        }
     if response.status_code != 200:
         message = "Session không hợp lệ hoặc hết hạn." if response.status_code == 401 else _description(body, f"DRES trả HTTP {response.status_code}.", session_id)
         return {"status": "error", "message": message}
@@ -88,12 +103,21 @@ def submit_answer(session_id, evaluation_id, answer_payload):
             timeout=(CONNECT_TIMEOUT, READ_TIMEOUT),
             allow_redirects=False,
         )
-    except ValueError:
-        return {"status": "rejected", "message": "BTC_API_BASE_URL chưa hợp lệ."}
+    except ValueError as exc:
+        return {"status": "rejected", "message": str(exc)}
     except requests.RequestException:
         return {"status": "unknown", "message": "Mất kết nối hoặc quá thời gian chờ; DRES có thể đã nhận bài. Kiểm tra trên DRES trước khi gửi lại."}
 
     body = _json_or_none(response)
+    if 300 <= response.status_code < 400:
+        return {
+            "status": "rejected",
+            "remote_status": response.status_code,
+            "message": (
+                "DRES host đang chuyển hướng sang domain khác. Không gửi lại; "
+                "hãy cập nhật BTC_API_BASE_URL theo BTC."
+            ),
+        }
     if response.status_code in (200, 202):
         if isinstance(body, dict) and body.get("status") is False:
             return {"status": "rejected", "message": _description(body, "DRES từ chối bài nộp.", session_id)}

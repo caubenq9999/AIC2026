@@ -131,7 +131,7 @@ artifacts/
 ├── keyframes/
 │   ├── L21/L21_V001/000000.jpg
 │   └── ...
-├── embeddings/jina/
+├── embedding/jina/
 │   ├── image/L21.npy ... L30.npy
 │   └── caption/L21.npy ... L30.npy, M01/ ...
 ├── metadata/
@@ -208,7 +208,7 @@ $env:AIC_ARTIFACTS_DIR = $dataRoot
 $env:AIC_KEYFRAMES_DIR = "$dataRoot\keyframes"
 $env:AIC_OCR_METADATA_PATH = "$dataRoot\metadata\frames"
 $env:AIC_ASR_METADATA_DIR = "$dataRoot\metadata\asr"
-$env:AIC_JINA_EMBEDDINGS_DIR = "$dataRoot\embeddings\jina"
+$env:AIC_JINA_EMBEDDINGS_DIR = "$dataRoot\embedding\jina"
 $env:AIC_YOLO_MODEL_PATH = "$dataRoot\yolov8n.pt"
 $env:AIC_CACHE_DIR = "D:\AIC2026-cache\huggingface"
 python app.py
@@ -258,9 +258,9 @@ search/nộp DRES. Timestamp, FPS và URL phát được đọc từ metadata OC
 Mặc định search dùng cache 128 chiều để smoke-test nhanh; đặt
 `AIC_TRAFFIC_SEARCH_DIMS=1024` khi muốn exact embedding đầy đủ (chậm hơn).
 
-Nộp trực tiếp vòng chung kết dùng DRES v2. Trước giờ thi, xác nhận địa chỉ DRES
-do BTC cung cấp; cấu hình bằng biến môi trường `BTC_API_BASE_URL` nếu khác mặc
-định `https://eventretrieval.oj.io.vn`. Ví dụ trong PowerShell, trước khi chạy app:
+Nộp trực tiếp vòng chung kết dùng DRES v2. Mặc định hệ thống dùng
+`https://eventretrieval.one`. Nếu BTC đổi host ở đợt thi sau, cấu hình biến môi
+trường `BTC_API_BASE_URL` trước khi chạy app:
 
 ```powershell
 $env:BTC_API_BASE_URL = "https://DRES_HOST_DO_BTC_CUNG_CAP"
@@ -282,16 +282,17 @@ Invoke-RestMethod http://localhost:5000/health
 | Biến | Mặc định |
 |---|---|
 | `AIC_ARTIFACTS_DIR` | `artifacts`; root thống nhất ưu tiên |
-| `AIC_JINA_EMBEDDINGS_DIR` | `artifacts/embeddings/jina` |
+| `AIC_JINA_EMBEDDINGS_DIR` | `artifacts/embedding/jina` |
+| `AIC_JINA_PORTABLE_IMAGE_DIR` | portable image packages M/N/S trong `artifacts/embedding/jina/image` |
 | `AIC_KEYFRAMES_DIR` | ưu tiên `artifacts/keyframes`, fallback `keyframes` |
 | `AIC_OCR_METADATA_PATH` | ưu tiên `artifacts/metadata/frames`, fallback metadata OCR legacy |
 | `AIC_OCR_TEXT_DIR` | tùy chọn; chỉ overlay khi dùng metadata legacy |
 | `AIC_ASR_METADATA_DIR` | ưu tiên `artifacts/metadata/asr`, fallback `asr/metadata_asr_clean` |
-| `AIC_JINA_VECTORS_DIR` | `embedding/jina/jina_embeddings_npy` |
-| `AIC_JINA_CAPTION_VECTORS_DIR` | `embedding/jina/caption_embeddings_npy` |
+| `AIC_JINA_VECTORS_DIR` | `artifacts/embedding/jina/image` |
+| `AIC_JINA_CAPTION_VECTORS_DIR` | `artifacts/embedding/jina/caption` |
 | `AIC_YOLO_MODEL_PATH` | `yolov8n.pt` |
 | `AIC_VIDEOS_DIR` | `videos`; tùy chọn, tự fallback sang folder `video` cũ hoặc YouTube |
-| `AIC_TRAFFIC_CAPTION_DIR` | ưu tiên `artifacts/embeddings/jina/caption`, fallback `captionbatch2_emb` |
+| `AIC_TRAFFIC_CAPTION_DIR` | ưu tiên `artifacts/embedding/jina/caption`, fallback layout cũ |
 | `AIC_TRAFFIC_DETECTION_PATH` | `detection segmentation/detection segmentation`; tùy chọn, tự quét Parquet |
 | `AIC_TRAFFIC_KEYFRAMES_DIR` | `keyframes`; nhận folder đã giải nén hoặc ZIP, dùng chung với Batch 1 |
 | `AIC_TRAFFIC_MAP_DIR` | `keyframes`; tự tìm map CSV nếu có |
@@ -300,7 +301,7 @@ Invoke-RestMethod http://localhost:5000/health
 | `AIC_TRAFFIC_SEARCH_DIMS` | `128` để test nhanh; `1024` để exact search |
 | `AIC_CACHE_DIR` | `.cache/huggingface` |
 | `GROQ_API_KEY` | rỗng; Query Expansion bị tắt |
-| `BTC_API_BASE_URL` | `https://eventretrieval.oj.io.vn`; cần xác nhận host thật với BTC |
+| `BTC_API_BASE_URL` | `https://eventretrieval.one`; có thể override bằng HTTPS origin do BTC cung cấp |
 
 ## 6. Đưa cập nhật UI/DRES lên GitHub
 

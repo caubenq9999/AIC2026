@@ -3,7 +3,7 @@
   "dataset": "AIC2026",
   "artifact_layout": "unified-jina-embeddings-v1",
   "artifact_root": "artifacts",
-  "total_frames": 817929,
+  "total_frames": 921783,
   "embedding_dimension": 1024,
   "embedding_model": {
     "id": "jinaai/jina-embeddings-v5-omni-small",
@@ -13,7 +13,7 @@
   },
   "modalities": {
     "image_embeddings": {
-      "frames": 317961,
+      "frames": 921783,
       "collections": [
         "L21",
         "L22",
@@ -24,7 +24,10 @@
         "L27",
         "L28",
         "L29",
-        "L30"
+        "L30",
+        "M01-M10",
+        "N001-N100",
+        "S01"
       ]
     },
     "caption_embeddings": {
@@ -35,7 +38,8 @@
   "logical_collections": {
     "L": "L21-L30",
     "M": "M01-M10",
-    "N": "N001-N100"
+    "N": "N001-N100",
+    "S": "S01"
   },
   "embedding_shards": {
     "L21": 26565,
@@ -63,11 +67,12 @@
     "N041-N050": 16432,
     "N051-N060": 16770,
     "N061-N080": 34311,
-    "N081-N100": 35694
+    "N081-N100": 35694,
+    "S01": 103854
   },
   "paths": {
-    "jina_image_embeddings": "artifacts/embeddings/jina/image",
-    "jina_caption_embeddings": "artifacts/embeddings/jina/caption",
+    "jina_image_embeddings": "artifacts/embedding/jina/image",
+    "jina_caption_embeddings": "artifacts/embedding/jina/caption",
     "frame_metadata": "artifacts/metadata/frames",
     "asr_metadata": "artifacts/metadata/asr",
     "keyframes": "artifacts/keyframes",
@@ -79,6 +84,7 @@
     "Batch 1 and Batch 2 are release labels only; all collections use the same artifact schema.",
     "M collections are logically M01-M10; M08-M09 is only a physical embedding shard containing M08 and M09.",
     "OCR and ASR are included under the shared metadata artifact root.",
-    "Collections without image embeddings remain searchable through Jina caption embeddings."
+    "Batch 2 and S01 image embeddings use portable NumPy packages with Parquet row mappings.",
+    "Collections without caption embeddings remain searchable through Jina image embeddings."
   ]
 }

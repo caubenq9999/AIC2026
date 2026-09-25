@@ -18,13 +18,21 @@ AIC2025/
 ├── README_ARTIFACTS.md
 │
 └── artifacts/
-    ├── embeddings/
+    ├── embedding/
     │   └── jina/
     │       ├── image/
     │       │   ├── L21.npy
     │       │   ├── L22.npy
     │       │   ├── ...
-    │       │   └── L30.npy
+    │       │   ├── L30.npy
+    │       │   ├── jina_batch2_numpy_499968x1024/jina_batch2_numpy/
+    │       │   │   ├── mapping.parquet
+    │       │   │   ├── manifest.json
+    │       │   │   └── vectors/part-*.npy
+    │       │   └── jina_s01_numpy_103854x1024/jina_s01_numpy/
+    │       │       ├── mapping.parquet
+    │       │       ├── manifest.json
+    │       │       └── vectors/part-*.npy
     │       └── caption/
     │           ├── L21.npy
     │           ├── L21.json
@@ -93,8 +101,21 @@ Các folder M/N/S dùng cùng tên file:
 | `caption_mapping.csv` | Ánh xạ từng dòng vector về video/frame/caption | Có |
 | `embedding_manifest.json` | Model, dimension, count, checksum | Khuyến nghị |
 
-Hiện `L21–L30` có cả image và caption embedding. Các collection `M/N/S` mới chỉ
-có caption embedding vẫn hợp lệ. Không cần đổi `L21.npy` thành folder `L21/`.
+Hiện `L21–L30` có image và caption embedding dạng collection shard. `M/N`
+có cả image và caption embedding; `S01` có image embedding. Image embedding
+M/N/S được giữ nguyên theo portable package của nhóm encode, không đổi tên
+hoặc tách `vectors/` khỏi `mapping.parquet`.
+
+Hai package portable được backend tự phát hiện bằng bộ ba:
+
+```text
+manifest.json
+mapping.parquet
+vectors/part-xxxxx.npy
+```
+
+Tổng image index hiện tại là 921.783 frame: 317.961 L, 499.968 M/N và
+103.854 S01.
 
 ## 3. Hợp đồng embedding và mapping
 
@@ -232,11 +253,11 @@ schema 2 đã dùng chung cho L/M/N và không còn đường dẫn Apple-CLIP.
 
 | Hiện tại | Chuẩn mới |
 |---|---|
-| `embedding/jina/jina_embeddings_npy/L21.npy` | `artifacts/embeddings/jina/image/L21.npy` |
-| `embedding/jina/caption_embeddings_npy/L21.npy` | `artifacts/embeddings/jina/caption/L21.npy` |
-| `embedding/jina/caption_embeddings_npy/L21.json` | `artifacts/embeddings/jina/caption/L21.json` |
-| `captionbatch2_emb/M01/*` | `artifacts/embeddings/jina/caption/M01/*` |
-| `captionbatch2_emb/N001-N010/*` | `artifacts/embeddings/jina/caption/N001-N010/*` |
+| `embedding/jina/jina_embeddings_npy/L21.npy` | `artifacts/embedding/jina/image/L21.npy` |
+| `embedding/jina/caption_embeddings_npy/L21.npy` | `artifacts/embedding/jina/caption/L21.npy` |
+| `embedding/jina/caption_embeddings_npy/L21.json` | `artifacts/embedding/jina/caption/L21.json` |
+| `captionbatch2_emb/M01/*` | `artifacts/embedding/jina/caption/M01/*` |
+| `captionbatch2_emb/N001-N010/*` | `artifacts/embedding/jina/caption/N001-N010/*` |
 | `ocr/metadata_ocr_filtered/metadata/*.json` | `artifacts/metadata/frames/*.json` |
 | `keyframes/*` | `artifacts/keyframes/*` |
 | `asr/metadata_asr_clean/*` | `artifacts/metadata/asr/*` |
@@ -262,7 +283,8 @@ $env:AIC_ARTIFACTS_DIR = "D:\AIC_DATA\artifacts"
 Các biến override chi tiết vẫn được hỗ trợ khi cần:
 
 ```powershell
-$env:AIC_JINA_EMBEDDINGS_DIR = "D:\AIC_DATA\artifacts\embeddings\jina"
+$env:AIC_JINA_EMBEDDINGS_DIR = "D:\AIC_DATA\artifacts\embedding\jina"
+$env:AIC_JINA_PORTABLE_IMAGE_DIR = "D:\AIC_DATA\artifacts\embedding\jina\image"
 $env:AIC_KEYFRAMES_DIR = "D:\AIC_DATA\artifacts\keyframes"
 $env:AIC_VIDEOS_DIR = "D:\AIC_DATA\artifacts\videos"
 $env:AIC_OCR_METADATA_PATH = "D:\AIC_DATA\artifacts\metadata\frames"
@@ -282,7 +304,7 @@ Parquet hoặc index/cache sinh tự động.
 
 ## 12. Checklist thêm collection
 
-1. Tạo một folder M/N/S trong `artifacts/embeddings/jina/caption/`.
+1. Tạo một folder M/N/S trong `artifacts/embedding/jina/caption/`.
 2. Đặt `caption_embeddings.npy` và `caption_mapping.csv` cùng folder.
 3. Kiểm tra số dòng khớp và dimension bằng 1,024.
 4. Chép metadata frame (có `ocr_text`) vào `artifacts/metadata/frames/`

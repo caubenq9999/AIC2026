@@ -267,8 +267,10 @@ class TrafficSearchIndex:
         self.det_counts = {name: np.asarray(values, dtype=np.int16) for name, values in det_counts.items()}
 
         self.rows_by_video = {}
+        self.row_by_video_frame = {}
         for index, video_id in enumerate(video_ids):
             self.rows_by_video.setdefault(video_id, []).append(index)
+            self.row_by_video_frame[(video_id, int(self.frame_indices[index]))] = index
         self.fps_by_video = self._infer_fps(map_fps)
         self.timestamps = np.empty(self.size, dtype=np.float64)
         for index, (video_id, frame_idx) in enumerate(zip(video_ids, self.frame_indices)):
@@ -282,6 +284,10 @@ class TrafficSearchIndex:
 
         self.row_by_web_path = {path: index for index, path in enumerate(web_paths)}
         image_assets = self._discover_image_assets()
+        # Keep the complete asset map so portable image-only packages (notably
+        # S01, which has no caption shard) can still reuse the same keyframe
+        # folders/ZIPs for thumbnails and detail playback.
+        self.image_assets = image_assets
         assets_by_video = {}
         for (video_id, asset_frame), asset in image_assets.items():
             assets_by_video.setdefault(video_id, []).append((asset_frame, asset))
@@ -674,6 +680,33 @@ class TrafficSearchIndex:
             "image_available": bool(self.image_available[index]),
         }
 
+    def metadata_for_video_frame(self, video_id, frame_idx):
+        normalized = str(video_id or "").upper()
+        aliases = [normalized]
+        if "_V" in normalized:
+            aliases.append(normalized.replace("_V", "-V"))
+        elif "-V" in normalized:
+            aliases.append(normalized.replace("-V", "_V"))
+        index = next(
+            (
+                self.row_by_video_frame.get((alias, int(frame_idx)))
+                for alias in aliases
+                if self.row_by_video_frame.get((alias, int(frame_idx))) is not None
+            ),
+            None,
+        )
+        if index is None:
+            return None
+        return {
+            "n": int(self.frame_indices[index]),
+            "frame_idx": int(self.frame_indices[index]),
+            "pts_time": float(self.timestamps[index]),
+            "path": self.web_paths[index],
+            "video_id": self.video_ids[index],
+            "caption": self.captions[index],
+            "image_available": bool(self.image_available[index]),
+        }
+
     def neighbors(self, image_path, radius=15):
         index = self.row_for_path(image_path)
         if index is None:
@@ -704,11 +737,69 @@ class TrafficSearchIndex:
             row = min(rows, key=lambda item: abs(int(self.frame_indices[item]) - int(frame_idx)))
         return {"frame_idx": int(self.frame_indices[row]), "pts_time": float(self.timestamps[row]), "path": self.web_paths[row]}
 
+    def results_around_time(self, video_id, target_time, time_border, limit=1000):
+        normalized = str(video_id or "").upper()
+        aliases = [normalized]
+        if "_V" in normalized:
+            aliases.append(normalized.replace("_V", "-V"))
+        elif "-V" in normalized:
+            aliases.append(normalized.replace("-V", "_V"))
+        canonical = next((alias for alias in aliases if alias in self.rows_by_video), None)
+        if canonical is None:
+            return []
+        rows = [
+            row for row in self.rows_by_video[canonical]
+            if abs(float(self.timestamps[row]) - float(target_time)) <= float(time_border)
+        ]
+        rows.sort(key=lambda row: (
+            abs(float(self.timestamps[row]) - float(target_time)),
+            float(self.timestamps[row]),
+        ))
+        return [{
+            "videoId": self.video_ids[row],
+            "frame_idx": int(self.frame_indices[row]),
+            "pts_time": float(self.timestamps[row]),
+            "path": self.web_paths[row],
+        } for row in rows[:max(0, int(limit))]]
+
     def image_asset_for_path(self, image_path):
         index = self.row_for_path(image_path)
         if index is None or self.assets_by_row[index] is None:
             return None
         kind, source, member = self.assets_by_row[index]
+        suffix = Path(member or source).suffix.casefold()
+        mimetype = (
+            "image/webp" if suffix == ".webp"
+            else mimetypes.types_map.get(suffix, "application/octet-stream")
+        )
+        if kind == "file":
+            return {"kind": "file", "path": source, "mimetype": mimetype}
+        try:
+            with zipfile.ZipFile(source) as archive:
+                payload = archive.read(member)
+        except (OSError, KeyError, zipfile.BadZipFile):
+            return None
+        return {"kind": "bytes", "data": payload, "mimetype": mimetype}
+
+    def image_asset_for_video_frame(self, video_id, frame_idx):
+        """Resolve an image independently from the caption-row universe."""
+        normalized = str(video_id or "").upper()
+        aliases = [normalized]
+        if "_V" in normalized:
+            aliases.append(normalized.replace("_V", "-V"))
+        elif "-V" in normalized:
+            aliases.append(normalized.replace("-V", "_V"))
+        asset = next(
+            (
+                self.image_assets.get((alias, int(frame_idx)))
+                for alias in aliases
+                if self.image_assets.get((alias, int(frame_idx))) is not None
+            ),
+            None,
+        )
+        if asset is None:
+            return None
+        kind, source, member = asset
         suffix = Path(member or source).suffix.casefold()
         mimetype = (
             "image/webp" if suffix == ".webp"

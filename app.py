@@ -39,14 +39,19 @@ def resolve_ocr_metadata_path():
 
     candidates = (
         ARTIFACTS_DIR / "metadata" / "frames",
-        ARTIFACTS_DIR / "metadata",
+        BASE_DIR / "metadata" / "frames",
         BASE_DIR / "ocr" / "metadata_ocr_filtered",
         BASE_DIR / "ocr" / "metadata_ocr_filtered.zip",
         BASE_DIR / "ocr" / "metadata_ocr",
         BASE_DIR / "ocr" / "metadata_ocr.zip",
     )
     for candidate in candidates:
-        if candidate.exists():
+        if candidate.is_file():
+            return candidate.resolve()
+        # Batch-1 ShardedNpyIndex still needs the L21-L30 row order. The new
+        # root metadata/frames may currently contain only M/N/S, so do not
+        # select it as the L metadata source merely because the folder exists.
+        if candidate.is_dir() and next(candidate.rglob("L21_V*.json"), None) is not None:
             return candidate.resolve()
 
     # Keep the error emitted by load_retrieval_data deterministic and useful.
@@ -83,6 +88,11 @@ from semantic_search import (
     ModelUnavailableError,
     ShardedNpyIndex,
 )
+from portable_image_search import (
+    PortableJinaImageIndex,
+    normalized_frame_key,
+    video_id_aliases,
+)
 from search_bm25 import PersistentInvertedBM25, fingerprint_paths
 from traffic_search import (
     TrafficSearchIndex,
@@ -113,9 +123,21 @@ OCR_METADATA_PATH = resolve_ocr_metadata_path()
 OCR_TEXT_DIR = project_path(
     "AIC_OCR_TEXT_DIR", "OCR_original_no_LLM", "OCR"
 )
-ASR_METADATA_DIR = canonical_or_legacy_path(
-    "AIC_ASR_METADATA_DIR", ("metadata", "asr"), ("asr", "metadata_asr_clean")
-)
+if os.getenv("AIC_ASR_METADATA_DIR", "").strip():
+    ASR_METADATA_DIR = project_path("AIC_ASR_METADATA_DIR")
+else:
+    ASR_METADATA_DIR = next(
+        (
+            path.resolve()
+            for path in (
+                ARTIFACTS_DIR / "metadata" / "asr",
+                BASE_DIR / "metadata" / "asr",
+                BASE_DIR / "asr" / "metadata_asr_clean",
+            )
+            if path.exists()
+        ),
+        (ARTIFACTS_DIR / "metadata" / "asr").resolve(),
+    )
 YOLO_MODEL_PATH = project_path("AIC_YOLO_MODEL_PATH", "yolov8n.pt")
 
 
@@ -123,9 +145,15 @@ def resolve_unified_jina_root():
     """Return the standardized Jina root, or None while using legacy paths."""
     if os.getenv("AIC_JINA_EMBEDDINGS_DIR", "").strip():
         return project_path("AIC_JINA_EMBEDDINGS_DIR")
-    canonical = (ARTIFACTS_DIR / "embeddings" / "jina").resolve()
-    if canonical.exists():
-        return canonical
+    # Layout đang dùng trong bộ artifact của đội là ``artifacts/embedding``
+    # (số ít). Vẫn dò ``embeddings`` để các máy đã tải layout tài liệu cũ
+    # không bị hỏng sau thay đổi này.
+    for candidate in (
+        ARTIFACTS_DIR / "embedding" / "jina",
+        ARTIFACTS_DIR / "embeddings" / "jina",
+    ):
+        if candidate.is_dir():
+            return candidate.resolve()
     return None
 
 
@@ -135,16 +163,24 @@ if os.getenv("AIC_JINA_VECTORS_DIR", "").strip():
 elif UNIFIED_JINA_ROOT is not None and (UNIFIED_JINA_ROOT / "image").is_dir():
     JINA_VECTORS_DIR = (UNIFIED_JINA_ROOT / "image").resolve()
 else:
-    JINA_VECTORS_DIR = (BASE_DIR / "embedding" / "jina" / "jina_embeddings_npy").resolve()
+    standardized = BASE_DIR / "embedding" / "jina" / "image"
+    JINA_VECTORS_DIR = (
+        standardized.resolve()
+        if standardized.is_dir()
+        else (BASE_DIR / "embedding" / "jina" / "jina_embeddings_npy").resolve()
+    )
 
 if os.getenv("AIC_JINA_CAPTION_VECTORS_DIR", "").strip():
     JINA_CAPTION_VECTORS_DIR = project_path("AIC_JINA_CAPTION_VECTORS_DIR")
 elif UNIFIED_JINA_ROOT is not None and (UNIFIED_JINA_ROOT / "caption").is_dir():
     JINA_CAPTION_VECTORS_DIR = (UNIFIED_JINA_ROOT / "caption").resolve()
 else:
+    standardized = BASE_DIR / "embedding" / "jina" / "caption"
     JINA_CAPTION_VECTORS_DIR = (
-        BASE_DIR / "embedding" / "jina" / "caption_embeddings_npy"
-    ).resolve()
+        standardized.resolve()
+        if standardized.is_dir()
+        else (BASE_DIR / "embedding" / "jina" / "caption_embeddings_npy").resolve()
+    )
 SEARCH_INDEX_CACHE_DIR = project_path(
     "AIC_SEARCH_INDEX_CACHE_DIR", ".cache", "search_indices"
 )
@@ -179,14 +215,28 @@ TRAFFIC_CAPTION_DIR = (
             UNIFIED_JINA_ROOT is not None
             and (UNIFIED_JINA_ROOT / "caption").is_dir()
         )
-        else (BASE_DIR / "captionbatch2_emb").resolve()
+        else (
+            (BASE_DIR / "embedding" / "jina" / "caption").resolve()
+            if (BASE_DIR / "embedding" / "jina" / "caption").is_dir()
+            else (BASE_DIR / "captionbatch2_emb").resolve()
+        )
     )
 )
-TRAFFIC_DETECTION_PATH = canonical_or_legacy_path(
-    "AIC_TRAFFIC_DETECTION_PATH",
-    ("detections",),
-    ("detection segmentation", "detection segmentation"),
-)
+if os.getenv("AIC_TRAFFIC_DETECTION_PATH", "").strip():
+    TRAFFIC_DETECTION_PATH = project_path("AIC_TRAFFIC_DETECTION_PATH")
+else:
+    TRAFFIC_DETECTION_PATH = next(
+        (
+            path.resolve()
+            for path in (
+                ARTIFACTS_DIR / "detections",
+                BASE_DIR / "detections",
+                BASE_DIR / "detection segmentation" / "detection segmentation",
+            )
+            if path.exists()
+        ),
+        (ARTIFACTS_DIR / "detections").resolve(),
+    )
 TRAFFIC_KEYFRAMES_DIR = canonical_or_legacy_path(
     "AIC_TRAFFIC_KEYFRAMES_DIR",
     ("keyframes",),
@@ -202,11 +252,27 @@ TRAFFIC_MAP_DIR = canonical_or_legacy_path(
 TRAFFIC_MEDIA_INFO_DIR = project_path(
     "AIC_TRAFFIC_MEDIA_INFO_DIR", "aic26-b2-media-info", "media-info"
 )
-TRAFFIC_METADATA_DIR = canonical_or_legacy_path(
-    "AIC_TRAFFIC_METADATA_DIR",
-    ("metadata", "frames"),
-    ("ocr", "metadata_ocr_filtered", "metadata"),
-)
+if os.getenv("AIC_TRAFFIC_METADATA_DIR", "").strip():
+    TRAFFIC_METADATA_DIR = project_path("AIC_TRAFFIC_METADATA_DIR")
+else:
+    TRAFFIC_METADATA_DIR = next(
+        (
+            path.resolve()
+            for path in (
+                ARTIFACTS_DIR / "metadata" / "frames",
+                BASE_DIR / "metadata" / "frames",
+                BASE_DIR / "ocr" / "metadata_ocr_filtered" / "metadata",
+            )
+            if path.exists()
+        ),
+        (ARTIFACTS_DIR / "metadata" / "frames").resolve(),
+    )
+if os.getenv("AIC_JINA_PORTABLE_IMAGE_DIR", "").strip():
+    JINA_PORTABLE_IMAGE_DIR = project_path("AIC_JINA_PORTABLE_IMAGE_DIR")
+elif UNIFIED_JINA_ROOT is not None and (UNIFIED_JINA_ROOT / "image").is_dir():
+    JINA_PORTABLE_IMAGE_DIR = (UNIFIED_JINA_ROOT / "image").resolve()
+else:
+    JINA_PORTABLE_IMAGE_DIR = (BASE_DIR / "embedding" / "jina" / "image").resolve()
 TRAFFIC_SEARCH_CACHE_DIR = project_path(
     "AIC_TRAFFIC_SEARCH_CACHE_DIR", ".cache", "batch2_search"
 )
@@ -351,6 +417,20 @@ except Exception as exc:
     traffic_search_reason = f"{type(exc).__name__}: {exc}"
     print(f"CẢNH BÁO: Traffic Search bị tắt: {traffic_search_reason}")
 
+portable_image_index = None
+portable_image_reason = None
+try:
+    portable_image_index = PortableJinaImageIndex(JINA_PORTABLE_IMAGE_DIR)
+    video_url_cache.update(portable_image_index.video_url_by_id)
+    print(
+        f"Portable Jina image index sẵn sàng: {portable_image_index.ntotal:,} frames / "
+        f"{portable_image_index.video_count} videos / "
+        f"{len(portable_image_index.package_names)} packages."
+    )
+except Exception as exc:
+    portable_image_reason = f"{type(exc).__name__}: {exc}"
+    print(f"CẢNH BÁO: Portable Jina image search bị tắt: {portable_image_reason}")
+
 
 def build_playback_info(video_id, pts_time=0):
     """Prefer a local video endpoint and fall back to the external watch URL."""
@@ -360,14 +440,25 @@ def build_playback_info(video_id, pts_time=0):
     except (TypeError, ValueError):
         playback_start = 0.0
 
-    if normalized_video_id in local_video_index:
+    local_id = next(
+        (alias for alias in video_id_aliases(normalized_video_id) if alias in local_video_index),
+        None,
+    )
+    if local_id is not None:
         return {
-            "playback_url": f"/videos/{normalized_video_id}",
+            "playback_url": f"/videos/{local_id}",
             "playback_type": "local",
             "playback_start": playback_start,
         }
 
-    watch_url = video_url_cache.get(normalized_video_id)
+    watch_url = next(
+        (
+            video_url_cache.get(alias)
+            for alias in video_id_aliases(normalized_video_id)
+            if video_url_cache.get(alias)
+        ),
+        None,
+    )
     if watch_url:
         separator = "&" if "?" in watch_url else "?"
         return {
@@ -389,6 +480,7 @@ ocr_text_is_embedded = (
     OCR_METADATA_PATH.name.lower()
     in {"metadata_ocr_filtered", "metadata_ocr_filtered.zip"}
     or OCR_METADATA_PATH.resolve().is_relative_to(canonical_metadata_root)
+    or OCR_METADATA_PATH.resolve().is_relative_to((BASE_DIR / "metadata").resolve())
 )
 if OCR_TEXT_DIR.is_dir() and not ocr_text_is_embedded:
     ocr_overlay_stats = overlay_ocr_jsonl(OCR_TEXT_DIR, image_records)
@@ -699,6 +791,96 @@ def reciprocal_rank_fusion(ranked_id_lists, k=60, weights=None):
         for rank, idx in enumerate(ranked_ids):
             scores[idx] = scores.get(idx, 0.0) + w / (k + rank + 1)
     return sorted(scores.items(), key=lambda x: x[1], reverse=True)
+
+
+def fuse_result_rankings(ranked_results, top_k, rrf_k=60.0):
+    """Fuse API result dictionaries by normalized video/frame identity."""
+    scores = {}
+    payloads = {}
+    sources = collections.defaultdict(set)
+    for results in ranked_results:
+        seen = set()
+        for rank, item in enumerate(results):
+            frame_idx = item.get("frame_idx")
+            if frame_idx is None:
+                path_stem = Path(str(item.get("path") or "")).stem
+                if not path_stem.isdigit():
+                    continue
+                frame_idx = int(path_stem)
+            key = normalized_frame_key(item.get("videoId", ""), int(frame_idx))
+            if key in seen:
+                continue
+            seen.add(key)
+            scores[key] = scores.get(key, 0.0) + 1.0 / (float(rrf_k) + rank + 1.0)
+            if key not in payloads:
+                payloads[key] = dict(item)
+                payloads[key]["source_score"] = float(item.get("score", 0.0))
+            else:
+                for field in ("caption", "vehicle_count", "vehicle_counts", "detection_available"):
+                    if field in item and field not in payloads[key]:
+                        payloads[key][field] = item[field]
+            sources[key].update(item.get("matched_by") or [])
+
+    ranked = sorted(scores, key=lambda key: scores[key], reverse=True)[:max(1, int(top_k))]
+    output = []
+    for key in ranked:
+        item = payloads[key]
+        item["score"] = float(scores[key])
+        item["matched_by"] = sorted(sources[key])
+        output.append(item)
+    return output
+
+
+def enrich_portable_results(results):
+    """Overlay exact timestamps/captions from shared M/N metadata when present."""
+    if traffic_search_index is not None:
+        for item in results:
+            asset = traffic_search_index.image_asset_for_video_frame(
+                item["videoId"], item["frame_idx"]
+            )
+            item["image_available"] = asset is not None
+            enrichment = traffic_search_index.metadata_for_video_frame(
+                item["videoId"], item["frame_idx"]
+            )
+            if enrichment is not None:
+                item["pts_time"] = float(enrichment["pts_time"])
+                if enrichment.get("caption"):
+                    item["caption"] = enrichment["caption"]
+    return results
+
+
+def search_supplemental_semantic(query_text, semantic_model, query_vector, top_k):
+    """Search M/N/S image packages and optionally fuse the M/N caption rank."""
+    image_results = enrich_portable_results(
+        portable_image_index.search(query_vector, top_k=top_k)
+        if portable_image_index is not None else []
+    )
+    caption_results = []
+    if traffic_search_index is not None and semantic_model == "jina-hybrid":
+        caption_results = traffic_search_index.search(
+            query_text,
+            query_vector,
+            top_k=min(traffic_search_index.size, top_k),
+        )
+        for item in caption_results:
+            item["batch"] = "batch2"
+
+    if image_results and caption_results:
+        return fuse_result_rankings([image_results, caption_results], top_k)
+    if image_results:
+        return image_results[:top_k]
+    if caption_results:
+        return caption_results[:top_k]
+    # Compatibility fallback while a machine has old captions but has not yet
+    # downloaded the portable image packages.
+    if traffic_search_index is not None:
+        fallback = traffic_search_index.search(
+            query_text, query_vector, top_k=min(traffic_search_index.size, top_k)
+        )
+        for item in fallback:
+            item["batch"] = "batch2"
+        return fallback
+    return []
 # === (KẾT THÚC) QUERY EXPANSION ===
 
 # === (CẬP NHẬT) OCR/ASR: bỏ hẳn Elasticsearch, dùng thẳng BM25 tự viết (đã build sẵn lúc khởi động) ===
@@ -894,10 +1076,10 @@ def semantic_models_status():
                 "available": jina_available,
                 "dimension": jina_semantic_index.d,
                 "vectors": jina_semantic_index.ntotal + (
-                    traffic_search_index.size
-                    if traffic_search_index is not None else 0
+                    portable_image_index.ntotal
+                    if portable_image_index is not None else 0
                 ),
-                "reason": jina_reason,
+                "reason": portable_image_reason or jina_reason,
             },
             "jina-hybrid": {
                 "label": SEMANTIC_MODEL_LABELS["jina-hybrid"],
@@ -906,6 +1088,7 @@ def semantic_models_status():
                 "vectors": (
                     (jina_caption_index.ntotal if jina_caption_index is not None else 0)
                     + (traffic_search_index.size if traffic_search_index is not None else 0)
+                    + (portable_image_index.ntotal if portable_image_index is not None else 0)
                 ),
                 "reason": caption_reason,
             },
@@ -971,6 +1154,18 @@ def search():
             return jsonify({"results": final_results, "summary": summary})
 
         if (
+            portable_image_index is not None
+            and portable_image_index.keyframe_map(video_id_query) is not None
+        ):
+            results = enrich_portable_results(
+                portable_image_index.results_for_video(video_id_query, top_k)
+            )
+            summary = {results[0]["videoId"]: len(results)} if results else {}
+            if group_results and results:
+                return jsonify({"results": {results[0]["videoId"]: results}, "summary": summary})
+            return jsonify({"results": results, "summary": summary})
+
+        if (
             traffic_search_index is not None
             and video_id_query in traffic_search_index.rows_by_video
         ):
@@ -1032,15 +1227,14 @@ def search():
                 })
 
         batch2_results = []
-        if semantic_model in {"jina", "jina-hybrid"} and traffic_search_index is not None:
+        if semantic_model in {"jina", "jina-hybrid"}:
             query_vector = _cached_semantic_query_vector(search_query, semantic_model)
-            batch2_results = traffic_search_index.search(
+            batch2_results = search_supplemental_semantic(
                 query_text,
+                semantic_model,
                 query_vector,
-                top_k=min(traffic_search_index.size, pool_k),
+                top_k=pool_k,
             )
-            for item in batch2_results:
-                item["batch"] = "batch2"
 
         # Scores của hai kho không cùng phân phối (Batch 1 có thể là cosine
         # hoặc Hybrid RRF; Batch 2 dùng caption semantic + detection). Trộn
@@ -1079,7 +1273,7 @@ def search():
                 "search_query": search_query,
                 "query_translated": query_translated,
                 "translation_reason": translation_reason,
-                "searched_batches": ["batch1", "batch2"] if batch2_results else ["batch1"],
+                "searched_batches": ["batch1", "batch2", "final"] if batch2_results else ["batch1"],
             })
         else:
             final_results = results[:top_k]
@@ -1090,7 +1284,7 @@ def search():
                 "search_query": search_query,
                 "query_translated": query_translated,
                 "translation_reason": translation_reason,
-                "searched_batches": ["batch1", "batch2"] if batch2_results else ["batch1"],
+                "searched_batches": ["batch1", "batch2", "final"] if batch2_results else ["batch1"],
             })
 
     except ModelUnavailableError as e:
@@ -1211,9 +1405,23 @@ def search_similar_image():
                     "path": web_path,
                     "videoId": video_id,
                     "score": float(score),
-                    "pts_time": float(pts_time)
+                    "pts_time": float(pts_time),
+                    "batch": "batch1",
                 })
                 summary[video_id] = summary.get(video_id, 0) + 1
+
+        if portable_image_index is not None:
+            portable_results = enrich_portable_results(
+                portable_image_index.search(query_vector, top_k=pool_k)
+            )
+            results.extend(portable_results)
+            for item in portable_results:
+                video_id = item["videoId"]
+                summary[video_id] = summary.get(video_id, 0) + 1
+
+        # Cùng model/revision, cùng document-side image space nên cosine của
+        # Batch 1, Batch 2 và S01 có thể so sánh trực tiếp.
+        results.sort(key=lambda item: float(item.get("score", 0.0)), reverse=True)
 
         sorted_summary = dict(sorted(summary.items(), key=lambda item: item[1], reverse=True))
 
@@ -1233,7 +1441,7 @@ def search_similar_image():
 
             return jsonify({"results": final_grouped_results, "summary": sorted_summary})
         else:
-            final_results = sorted(results, key=lambda x: x['score'], reverse=True)[:top_k]
+            final_results = results[:top_k]
             return jsonify({"results": final_results, "summary": sorted_summary})
 
     except ModelUnavailableError as e:
@@ -1782,14 +1990,15 @@ def search_fusion():
                         register(key, web_path, video_id, meta.get('pts_time', 0) if meta else 0, "JINA_HYBRID")
 
                 batch2_jina_keys = []
-                if traffic_search_index is not None:
+                if portable_image_index is not None or traffic_search_index is not None:
                     query_vector = _cached_semantic_query_vector(
                         query_jina, "jina-hybrid"
                     )
-                    batch2_hits = traffic_search_index.search(
+                    batch2_hits = search_supplemental_semantic(
                         query_jina,
+                        "jina-hybrid",
                         query_vector,
-                        top_k=min(traffic_search_index.size, pool_k),
+                        top_k=pool_k,
                     )
                     for item in batch2_hits:
                         frame_idx = int(item["frame_idx"])
@@ -1964,6 +2173,27 @@ def search_traffic():
 def get_metadata():
     try:
         image_path = request.json['image_path']
+        if portable_image_index is not None:
+            portable_meta = portable_image_index.metadata_for_path(image_path)
+            if portable_meta is not None:
+                enrichment = (
+                    traffic_search_index.metadata_for_video_frame(
+                        portable_meta["video_id"], portable_meta["frame_idx"]
+                    )
+                    if traffic_search_index is not None else None
+                )
+                if enrichment is not None:
+                    portable_meta["pts_time"] = float(enrichment["pts_time"])
+                    portable_meta["caption"] = enrichment.get("caption", "")
+                portable_meta["image_available"] = (
+                    traffic_search_index.image_asset_for_video_frame(
+                        portable_meta["video_id"], portable_meta["frame_idx"]
+                    ) is not None
+                )
+                portable_meta.update(build_playback_info(
+                    portable_meta["video_id"], portable_meta["pts_time"]
+                ))
+                return jsonify(portable_meta)
         if traffic_search_index is not None:
             traffic_meta = traffic_search_index.metadata_for_path(image_path)
             if traffic_meta is not None:
@@ -1989,6 +2219,10 @@ def get_neighbor_frames():
         payload = request.get_json() or {}
         image_path = payload['image_path']
         radius = max(1, min(int(payload.get('radius', 15)), 50))
+        if portable_image_index is not None:
+            portable_neighbors = portable_image_index.neighbors(image_path, radius)
+            if portable_neighbors:
+                return jsonify({"neighbors": portable_neighbors})
         if traffic_search_index is not None:
             traffic_neighbors = traffic_search_index.neighbors(image_path, radius)
             if traffic_neighbors:
@@ -2011,6 +2245,10 @@ def get_keyframe_map():
             traffic_map = traffic_search_index.keyframe_map(video_id)
             if traffic_map:
                 return jsonify(traffic_map)
+        if portable_image_index is not None:
+            portable_map = portable_image_index.keyframe_map(video_id)
+            if portable_map:
+                return jsonify(portable_map)
         map_data = keyframe_time_cache.get(video_id)
         # (SỬA LỖI) Thêm check `if map_data`
         if map_data:
@@ -2094,13 +2332,22 @@ def resolve_submission_candidates():
             path = candidate.get("path") or candidate.get("web_path")
 
             if path:
-                web_path, parsed_video_id, parsed_frame_n = get_web_path(path)
-                if web_path:
-                    path = web_path
-                if parsed_video_id and parsed_video_id != "N/A":
-                    video_id = parsed_video_id
-                if parsed_frame_n is not None:
-                    frame_n = int(parsed_frame_n)
+                portable_meta = (
+                    portable_image_index.metadata_for_path(path)
+                    if portable_image_index is not None else None
+                )
+                if portable_meta is not None:
+                    video_id = portable_meta["video_id"]
+                    frame_n = int(portable_meta["frame_idx"])
+                    candidate.setdefault("frame_idx", int(portable_meta["frame_idx"]))
+                else:
+                    web_path, parsed_video_id, parsed_frame_n = get_web_path(path)
+                    if web_path:
+                        path = web_path
+                    if parsed_video_id and parsed_video_id != "N/A":
+                        video_id = parsed_video_id
+                    if parsed_frame_n is not None:
+                        frame_n = int(parsed_frame_n)
 
             meta = None
             if video_id in metadata_cache and frame_n is not None:
@@ -2150,7 +2397,15 @@ def resolve_submission_neighbors():
                 raise ValueError(f"Anchor {position} không hợp lệ.")
             video_id = str(anchor.get("videoId") or anchor.get("video_id") or "").upper()
             records = metadata_cache.get(video_id)
-            if not records:
+            portable_map = (
+                portable_image_index.keyframe_map(video_id)
+                if portable_image_index is not None else None
+            )
+            traffic_map = (
+                traffic_search_index.keyframe_map(video_id)
+                if traffic_search_index is not None else None
+            )
+            if not records and not portable_map and not traffic_map:
                 raise ValueError(f"Không tìm thấy metadata của {video_id!r}.")
 
             raw_pts_time = anchor.get("ptsTime", anchor.get("pts_time"))
@@ -2161,6 +2416,44 @@ def resolve_submission_neighbors():
                     raise ValueError(f"Timestamp anchor {position} không hợp lệ.")
 
             raw_frame_idx = anchor.get("frameIdx", anchor.get("frame_idx"))
+            if not records:
+                if target_time is None:
+                    if raw_frame_idx in (None, ""):
+                        raise ValueError(f"Anchor {position} thiếu frame_idx/timestamp.")
+                    closest = (
+                        traffic_search_index.nearest_video_frame(
+                            video_id, frame_idx=int(raw_frame_idx)
+                        ) if traffic_map else portable_image_index.nearest_video_frame(
+                            video_id, frame_idx=int(raw_frame_idx)
+                        )
+                    )
+                    target_time = float(closest["pts_time"])
+                nearby = (
+                    traffic_search_index.results_around_time(
+                        video_id, target_time, time_border, limit - len(results)
+                    ) if traffic_map else portable_image_index.results_around_time(
+                        video_id, target_time, time_border, limit - len(results)
+                    )
+                )
+                canonical_video_id = nearby[0]["videoId"] if nearby else video_id
+                resolved_anchors.append({"videoId": canonical_video_id, "ptsTime": target_time})
+                for item in nearby:
+                    candidate_key = normalized_frame_key(item["videoId"], item["frame_idx"])
+                    if candidate_key in seen:
+                        continue
+                    seen.add(candidate_key)
+                    results.append({
+                        "videoId": item["videoId"],
+                        "frameIdx": int(item["frame_idx"]),
+                        "frame_n": int(item["frame_idx"]),
+                        "ptsTime": float(item["pts_time"]),
+                        "path": item["path"],
+                        "distanceSeconds": abs(float(item["pts_time"]) - target_time),
+                    })
+                if len(results) >= limit:
+                    break
+                continue
+
             if target_time is None:
                 if raw_frame_idx in (None, ""):
                     raise ValueError(f"Anchor {position} thiếu frame_idx/timestamp.")
@@ -2236,6 +2529,12 @@ def resolve_submission_playback():
                 if traffic_search_index is not None
                 else None
             )
+            if traffic_frame is None:
+                traffic_frame = (
+                portable_image_index.nearest_video_frame(video_id, frame_idx, pts_time)
+                if portable_image_index is not None
+                else None
+                )
             if traffic_frame is None:
                 raise ValueError(f"Không tìm thấy video {video_id!r}.")
             resolved_time = float(traffic_frame["pts_time"])
@@ -2440,6 +2739,16 @@ def health():
                 if traffic_search_index is not None else False
             ),
         },
+        "portable_images": {
+            "available": portable_image_index is not None,
+            "reason": portable_image_reason,
+            "frames": portable_image_index.ntotal if portable_image_index is not None else 0,
+            "videos": portable_image_index.video_count if portable_image_index is not None else 0,
+            "packages": (
+                portable_image_index.package_names
+                if portable_image_index is not None else []
+            ),
+        },
         "jina": {"available": jina_available, "reason": jina_reason},
         "jina_hybrid": {
             "available": hybrid_available,
@@ -2458,7 +2767,14 @@ def serve_submission_builder():
     return send_from_directory(str(BASE_DIR), 'submission-builder.html')
 @app.route('/videos/<video_id>')
 def serve_local_video(video_id):
-    asset = local_video_index.get(str(video_id).upper())
+    asset = next(
+        (
+            local_video_index.get(alias)
+            for alias in video_id_aliases(video_id)
+            if local_video_index.get(alias) is not None
+        ),
+        None,
+    )
     if asset is None:
         abort(404)
     asset_path = asset["path"]
@@ -2518,10 +2834,17 @@ def serve_local_video(video_id):
 @app.route('/batch2-keyframes/<path:path>')
 def serve_batch2_keyframes(path):
     logical_path = f"/batch2-keyframes/{path}"
-    asset = (
-        traffic_search_index.image_asset_for_path(logical_path)
-        if traffic_search_index is not None else None
+    asset = None
+    portable_meta = (
+        portable_image_index.metadata_for_path(logical_path)
+        if portable_image_index is not None else None
     )
+    if portable_meta is not None and traffic_search_index is not None:
+        asset = traffic_search_index.image_asset_for_video_frame(
+            portable_meta["video_id"], portable_meta["frame_idx"]
+        )
+    if asset is None and traffic_search_index is not None:
+        asset = traffic_search_index.image_asset_for_path(logical_path)
     if asset is not None:
         if asset["kind"] == "file":
             return send_file(
