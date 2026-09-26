@@ -140,7 +140,11 @@
         if (video.pts_time !== null && video.pts_time !== undefined) {
             details.push(`${Number(video.pts_time).toFixed(2)}s`);
         }
-        if (video.frame_n !== null && video.frame_n !== undefined) details.push(`frame ${video.frame_n}`);
+        if (video.frame_idx !== null && video.frame_idx !== undefined) {
+            details.push(`frame_idx ${video.frame_idx}`);
+        } else if (video.frame_n !== null && video.frame_n !== undefined) {
+            details.push(`frame ${video.frame_n}`);
+        }
         meta.textContent = details.join(" · ") || "Kết quả retrieval";
         info.append(title, meta);
         const modeLabel = video.search_mode_label || video.search_mode;
@@ -310,7 +314,9 @@
         if (detail.classList.contains("hidden") || !videoId || videoId === "N/A") return null;
 
         const parseNumber = (id, integer = false) => {
-            const value = byId(id).textContent.trim();
+            const element = byId(id);
+            if (!element) return null;
+            const value = element.textContent.trim();
             const parsed = integer ? Number.parseInt(value, 10) : Number.parseFloat(value);
             return Number.isFinite(parsed) ? parsed : null;
         };
@@ -340,7 +346,8 @@
 
         const label = document.createElement("span");
         const modeLabel = attachedVideo.search_mode_label || attachedVideo.search_mode;
-        label.textContent = `${attachedVideo.video_id} · ${attachedVideo.pts_time !== null ? `${attachedVideo.pts_time.toFixed(2)}s` : `frame ${attachedVideo.frame_n ?? "N/A"}`}${modeLabel ? ` · ${modeLabel}` : ""}`;
+        const frameLabel = attachedVideo.frame_idx ?? attachedVideo.frame_n ?? "N/A";
+        label.textContent = `${attachedVideo.video_id} · ${attachedVideo.pts_time !== null ? `${attachedVideo.pts_time.toFixed(2)}s` : `frame ${frameLabel}`}${modeLabel ? ` · ${modeLabel}` : ""}`;
         label.title = attachedVideo.query ? `Query: ${attachedVideo.query}` : "";
         const remove = document.createElement("button");
         remove.type = "button";
