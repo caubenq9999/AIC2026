@@ -310,10 +310,17 @@
         if (detail.classList.contains("hidden") || !videoId || videoId === "N/A") return null;
 
         const parseNumber = (id, integer = false) => {
-            const value = byId(id).textContent.trim();
+            const element = byId(id);
+            if (!element) return null;
+            const value = element.textContent.trim();
             const parsed = integer ? Number.parseInt(value, 10) : Number.parseFloat(value);
             return Number.isFinite(parsed) ? parsed : null;
         };
+
+        const imagePath = localImagePath(byId("detail-image").getAttribute("src"));
+        const imageName = imagePath.split("/").pop()?.split(/[?#]/, 1)[0] || "";
+        const pathFrame = Number.parseInt(imageName.replace(/\.[^.]+$/, ""), 10);
+        const frameIdx = parseNumber("meta-idx", true);
 
         const searchContext = typeof window.getCurrentFrameSearchContext === "function"
             ? window.getCurrentFrameSearchContext()
@@ -322,10 +329,13 @@
 
         return {
             video_id: videoId,
-            frame_n: parseNumber("meta-n", true),
-            frame_idx: parseNumber("meta-idx", true),
+            // #meta-n was removed from the compact detail panel. Prefer it
+            // when an older UI still exposes it, otherwise use the frame name.
+            frame_n: parseNumber("meta-n", true)
+                ?? (Number.isFinite(pathFrame) ? pathFrame : frameIdx),
+            frame_idx: frameIdx,
             pts_time: parseNumber("meta-pts"),
-            image_path: localImagePath(byId("detail-image").getAttribute("src")),
+            image_path: imagePath,
             query: searchContext?.query || (byId("query-input").value || "").trim(),
             search_mode: searchContext?.mode || checkedMode?.value || "",
             search_mode_label: searchContext?.mode_label || checkedMode?.value || "",

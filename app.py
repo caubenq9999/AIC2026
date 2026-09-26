@@ -715,6 +715,54 @@ def get_neighbor_frame_ids(video_id, frame_id, radius):
     return frames[start:end]
 
 
+def get_canonical_video_id(video_id):
+    """Resolve dash/underscore aliases to the ID used by canonical metadata."""
+    return next(
+        (alias for alias in video_id_aliases(video_id) if alias in metadata_cache),
+        None,
+    )
+
+
+def get_canonical_frame_metadata(video_id, frame_idx):
+    """Return authoritative FPS/timestamp metadata for a portable vector row."""
+    canonical_video_id = get_canonical_video_id(video_id)
+    if canonical_video_id is None:
+        return None
+    return metadata_cache[canonical_video_id].get(int(frame_idx))
+
+
+def overlay_canonical_keyframe_map(video_id, portable_map):
+    """Keep portable image URLs but take timing entirely from canonical metadata."""
+    canonical_video_id = get_canonical_video_id(video_id)
+    if canonical_video_id is None:
+        return portable_map
+    canonical_map = keyframe_time_cache.get(canonical_video_id)
+    if not canonical_map:
+        return portable_map
+
+    portable_paths_by_frame = {}
+    for entry, path in zip(
+        portable_map.get("data", []), portable_map.get("paths", [])
+    ):
+        if not entry:
+            continue
+        frame_idx = entry[1] if len(entry) > 1 else entry[0]
+        portable_paths_by_frame[int(frame_idx)] = path
+
+    merged = {
+        "fps": canonical_map.get("fps"),
+        "times": list(canonical_map.get("times", [])),
+        "data": list(canonical_map.get("data", [])),
+        "paths": [],
+    }
+    for entry, canonical_path in zip(merged["data"], canonical_map.get("paths", [])):
+        frame_idx = entry[1] if len(entry) > 1 else entry[0]
+        merged["paths"].append(
+            portable_paths_by_frame.get(int(frame_idx), canonical_path)
+        )
+    return merged
+
+
 # === (THÊM MỚI) QUERY EXPANSION (Groq) - Theo "[AIC2026] - Query expansion.docx", PLAN A ===
 QUERY_EXPANSION_PROMPT_TEMPLATE = """Bạn là chuyên gia viết truy vấn cho mô hình Jina đa phương thức trong bài toán Video Information Retrieval.
 
@@ -850,9 +898,9 @@ def fuse_result_rankings(ranked_results, top_k, rrf_k=60.0):
 
 
 def enrich_portable_results(results):
-    """Overlay exact timestamps/captions from shared M/N metadata when present."""
-    if traffic_search_index is not None:
-        for item in results:
+    """Overlay portable rows with canonical timing and optional caption/assets."""
+    for item in results:
+        if traffic_search_index is not None:
             asset = traffic_search_index.image_asset_for_video_frame(
                 item["videoId"], item["frame_idx"]
             )
@@ -864,6 +912,16 @@ def enrich_portable_results(results):
                 item["pts_time"] = float(enrichment["pts_time"])
                 if enrichment.get("caption"):
                     item["caption"] = enrichment["caption"]
+        canonical = get_canonical_frame_metadata(
+            item["videoId"], item["frame_idx"]
+        )
+        if canonical is not None:
+            # Canonical frame metadata is authoritative. This is essential
+            # for S01 because its portable vector mapping intentionally stores
+            # null FPS/timestamp values.
+            item["pts_time"] = float(canonical.get("pts_time", 0) or 0)
+            if canonical.get("fps") is not None:
+                item["fps"] = float(canonical["fps"])
     return results
 
 
@@ -2201,10 +2259,18 @@ def get_metadata():
                     if traffic_search_index is not None else None
                 )
                 if enrichment is not None:
-                    portable_meta["pts_time"] = float(enrichment["pts_time"])
                     portable_meta["caption"] = enrichment.get("caption", "")
-                portable_meta["image_available"] = (
-                    traffic_search_index.image_asset_for_video_frame(
+                canonical = get_canonical_frame_metadata(
+                    portable_meta["video_id"], portable_meta["frame_idx"]
+                )
+                if canonical is not None:
+                    portable_path = portable_meta["path"]
+                    portable_meta.update(canonical)
+                    portable_meta["path"] = portable_path
+                    portable_meta["n"] = int(portable_meta["frame_idx"])
+                portable_meta["image_available"] = bool(
+                    traffic_search_index is not None
+                    and traffic_search_index.image_asset_for_video_frame(
                         portable_meta["video_id"], portable_meta["frame_idx"]
                     ) is not None
                 )
@@ -2266,8 +2332,9 @@ def get_keyframe_map():
         if portable_image_index is not None:
             portable_map = portable_image_index.keyframe_map(video_id)
             if portable_map:
-                return jsonify(portable_map)
-        map_data = keyframe_time_cache.get(video_id)
+                return jsonify(overlay_canonical_keyframe_map(video_id, portable_map))
+        canonical_video_id = get_canonical_video_id(video_id)
+        map_data = keyframe_time_cache.get(canonical_video_id or video_id)
         # (SỬA LỖI) Thêm check `if map_data`
         if map_data:
             return jsonify(map_data)
