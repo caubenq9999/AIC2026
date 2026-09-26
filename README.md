@@ -291,7 +291,7 @@ Invoke-RestMethod http://localhost:5000/health
 | `AIC_JINA_VECTORS_DIR` | `artifacts/embedding/jina/image` |
 | `AIC_JINA_CAPTION_VECTORS_DIR` | `artifacts/embedding/jina/caption` |
 | `AIC_YOLO_MODEL_PATH` | `yolov8n.pt` |
-| `AIC_VIDEOS_DIR` | `videos`; tùy chọn, tự fallback sang folder `video` cũ hoặc YouTube |
+| `AIC_VIDEOS_DIR` | `videos`; tùy chọn, chỉ dùng video local khi metadata không có URL YouTube |
 | `AIC_TRAFFIC_CAPTION_DIR` | ưu tiên `artifacts/embedding/jina/caption`, fallback layout cũ |
 | `AIC_TRAFFIC_DETECTION_PATH` | `detection segmentation/detection segmentation`; tùy chọn, tự quét Parquet |
 | `AIC_TRAFFIC_KEYFRAMES_DIR` | `keyframes`; nhận folder đã giải nén hoặc ZIP, dùng chung với Batch 1 |

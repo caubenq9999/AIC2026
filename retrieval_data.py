@@ -16,7 +16,10 @@ from typing import Iterator
 import zipfile
 
 
-VIDEO_ID_PATTERN = re.compile(r"^[A-Z]\d{2}_V\d+$", re.IGNORECASE)
+# Batch 1 dùng ``L21_V001``/``M01_V001``; các collection mới dùng cả
+# ``N001-V001`` và ``S01-V001``.  Metadata canonical phải chấp nhận cả hai
+# separator để cache video/detail không bị giới hạn ở L-only.
+VIDEO_ID_PATTERN = re.compile(r"^[A-Z]\d{2,3}[-_]V\d+$", re.IGNORECASE)
 OCR_OVERLAY_FILTER_COLLECTIONS = {"L21", "L22"}
 # L21/L22 dùng layout bản tin 1280x720. Ticker nhiễu là dải ngang sát đáy,
 # vì vậy chỉ xét trục Y và mặc định phủ toàn bộ chiều rộng frame.
@@ -60,7 +63,7 @@ def parse_keyframe_path(original_path: str | Path | None):
     if not image_path.stem.isdigit() or not image_path.suffix:
         return None, "N/A", None
 
-    collection = video_id.split("_", 1)[0]
+    collection = re.split(r"[-_]", video_id, maxsplit=1)[0]
     web_path = f"Keyframes/{collection}/{video_id}/{image_name}"
     return web_path, video_id, image_path.stem
 
@@ -102,8 +105,21 @@ def load_retrieval_data(
     keyframes_dir: str | Path,
     expected_rows: int | None = None,
     allowed_collections: set[str] | None = None,
+    indexed_collections: set[str] | None = None,
 ) -> RetrievalData:
-    """Load OCR/keyframe metadata and build the lookup tables used by Flask."""
+    """Load keyframe metadata and build the lookup tables used by Flask.
+
+    ``indexed_collections`` identifies legacy collections whose metadata
+    ``idx`` is the row number of a shared vector matrix (currently L21--L30).
+    Their indices are validated and kept first, in exact vector order.  Other
+    collections are appended in deterministic metadata-file order and their
+    ``idx`` is deliberately *not* treated as a global key.  This lets the app
+    load every metadata artifact even when a newer collection restarts or
+    retains an older index offset.
+
+    If ``indexed_collections`` is omitted, the old global-index validation is
+    retained for callers that depend on it.
+    """
 
     metadata_source = Path(metadata_source)
     keyframes_dir = Path(keyframes_dir)
@@ -111,6 +127,7 @@ def load_retrieval_data(
         raise FileNotFoundError(f"Không tìm thấy thư mục keyframe: {keyframes_dir}")
 
     image_records: list[dict | None] = []
+    supplemental_records: list[dict] = []
     metadata_cache: dict[str, dict[int, dict]] = {}
     video_url_cache: dict[str, str] = {}
 
@@ -148,11 +165,19 @@ def load_retrieval_data(
                 }
             )
 
-            if record_index >= len(image_records):
-                image_records.extend([None] * (record_index + 1 - len(image_records)))
-            if image_records[record_index] is not None:
-                raise ValueError(f"Trùng idx={record_index} trong metadata OCR.")
-            image_records[record_index] = record
+            uses_vector_index = (
+                indexed_collections is None or collection in indexed_collections
+            )
+            if uses_vector_index:
+                if record_index >= len(image_records):
+                    image_records.extend([None] * (record_index + 1 - len(image_records)))
+                if image_records[record_index] is not None:
+                    raise ValueError(
+                        f"Trùng idx={record_index} trong metadata của collection được lập chỉ mục."
+                    )
+                image_records[record_index] = record
+            else:
+                supplemental_records.append(record)
 
             video_records = metadata_cache.setdefault(video_id, {})
             if frame_id in video_records:
@@ -168,13 +193,17 @@ def load_retrieval_data(
         preview = ", ".join(map(str, missing_indices[:5]))
         raise ValueError(f"Metadata OCR thiếu idx: {preview}")
 
-    if expected_rows is not None and len(image_records) != expected_rows:
+    normalized_records: list[dict] = [
+        record for record in image_records if record is not None
+    ]
+    normalized_records.extend(supplemental_records)
+
+    if expected_rows is not None and len(normalized_records) != expected_rows:
         raise ValueError(
             "Số metadata không khớp FAISS index: "
-            f"metadata={len(image_records)}, faiss={expected_rows}"
+            f"metadata={len(normalized_records)}, faiss={expected_rows}"
         )
 
-    normalized_records: list[dict] = [record for record in image_records if record is not None]
     keyframe_time_cache: dict[str, dict] = {}
     video_frame_ids: dict[str, list[int]] = {}
 

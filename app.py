@@ -203,8 +203,8 @@ def resolve_videos_dir():
     return legacy
 
 
-# Video local là artifact tùy chọn. Nếu không có MP4 đã giải nén,
-# build_playback_info() sẽ tự fallback về URL YouTube trong metadata.
+# Video local là artifact tùy chọn. Playback ưu tiên URL YouTube trong metadata;
+# MP4/ZIP local chỉ được dùng khi video không có URL YouTube.
 VIDEOS_DIR = resolve_videos_dir()
 TRAFFIC_CAPTION_DIR = (
     project_path("AIC_TRAFFIC_CAPTION_DIR")
@@ -382,17 +382,35 @@ except Exception as e:
     print(f"CẢNH BÁO: Không thể tải YOLOv8n model: {e}. Tính năng auto_crop sẽ bị vô hiệu hóa.")
     yolo_model = None
 
+BATCH1_JINA_COLLECTIONS = {f"L{number}" for number in range(21, 31)}
 retrieval_data = load_retrieval_data(
     OCR_METADATA_PATH,
     KEYFRAMES_DIR,
-    allowed_collections={f"L{number}" for number in range(21, 31)},
+    indexed_collections=BATCH1_JINA_COLLECTIONS,
 )
 image_records = retrieval_data.image_records
+jina_image_records = [
+    record
+    for record in image_records
+    if re.split(r"[-_]", record["video_id"], maxsplit=1)[0]
+    in BATCH1_JINA_COLLECTIONS
+]
 metadata_cache = retrieval_data.metadata_cache
 keyframe_time_cache = retrieval_data.keyframe_time_cache
 video_frame_ids = retrieval_data.video_frame_ids
 video_url_cache = retrieval_data.video_url_cache
-print(f"Loaded {len(image_records)} embedding/OCR records from {len(metadata_cache)} videos.")
+metadata_family_counts = collections.Counter(
+    record["video_id"][:1] for record in image_records
+)
+print(
+    f"Loaded {len(image_records):,} metadata/OCR records from "
+    f"{len(metadata_cache):,} videos "
+    f"({', '.join(f'{name}={count:,}' for name, count in sorted(metadata_family_counts.items()))})."
+)
+print(
+    f"Legacy L Jina row map: {len(jina_image_records):,} records "
+    f"({', '.join(sorted(BATCH1_JINA_COLLECTIONS))})."
+)
 
 traffic_search_index = None
 traffic_search_reason = None
@@ -433,23 +451,12 @@ except Exception as exc:
 
 
 def build_playback_info(video_id, pts_time=0):
-    """Prefer a local video endpoint and fall back to the external watch URL."""
+    """Prefer YouTube playback and use a local video only as fallback."""
     normalized_video_id = str(video_id or "").upper()
     try:
         playback_start = max(0.0, float(pts_time or 0))
     except (TypeError, ValueError):
         playback_start = 0.0
-
-    local_id = next(
-        (alias for alias in video_id_aliases(normalized_video_id) if alias in local_video_index),
-        None,
-    )
-    if local_id is not None:
-        return {
-            "playback_url": f"/videos/{local_id}",
-            "playback_type": "local",
-            "playback_start": playback_start,
-        }
 
     watch_url = next(
         (
@@ -464,6 +471,17 @@ def build_playback_info(video_id, pts_time=0):
         return {
             "playback_url": f"{watch_url}{separator}t={int(playback_start)}s",
             "playback_type": "youtube",
+            "playback_start": playback_start,
+        }
+
+    local_id = next(
+        (alias for alias in video_id_aliases(normalized_video_id) if alias in local_video_index),
+        None,
+    )
+    if local_id is not None:
+        return {
+            "playback_url": f"/videos/{local_id}",
+            "playback_type": "local",
             "playback_start": playback_start,
         }
 
@@ -509,7 +527,7 @@ jina_image_shard_filename = (
 jina_semantic_index = ShardedNpyIndex(
     "Jina",
     JINA_VECTORS_DIR,
-    image_records,
+    jina_image_records,
     expected_dimension=1024,
     shard_filename=jina_image_shard_filename,
 )
@@ -540,7 +558,7 @@ try:
     jina_caption_index = ShardedNpyIndex(
         "Jina Caption",
         JINA_CAPTION_VECTORS_DIR,
-        image_records,
+        jina_image_records,
         expected_dimension=1024,
         shard_filename=jina_caption_shard_filename,
     )
@@ -1209,7 +1227,7 @@ def search():
         batch1_results = []
 
         for i in ordered_indices:
-            original_path = image_records[int(i)]['path']
+            original_path = jina_image_records[int(i)]['path']
             web_path, video_id, frame_n_str = get_web_path(original_path)
 
             # (SỬA LỖI) Thêm check frame_n_str (không phải None)
@@ -1393,7 +1411,7 @@ def search_similar_image():
         summary = {}
 
         for i, score in ordered:
-            original_path = image_records[int(i)]['path']
+            original_path = jina_image_records[int(i)]['path']
             web_path, video_id, frame_n_str = get_web_path(original_path)
 
             if web_path and frame_n_str:
@@ -1646,7 +1664,7 @@ def search_trake_02():
                 idx = int(idx)
                 if idx < 0:
                     continue
-                web_path, video_id, frame_n_str = get_web_path(image_records[int(idx)]['path'])
+                web_path, video_id, frame_n_str = get_web_path(jina_image_records[int(idx)]['path'])
                 if not web_path or not frame_n_str or video_id == "N/A":
                     continue
                 frame_n = int(frame_n_str)
@@ -1788,7 +1806,7 @@ def search_trake_image():
                 )
                 
                 for i, dist in zip(indices[0], distances[0]):
-                    original_path = image_records[int(i)]['path']
+                    original_path = jina_image_records[int(i)]['path']
                     web_path, video_id, frame_n_str = get_web_path(original_path)
                     
                     if web_path and frame_n_str:
@@ -1981,7 +1999,7 @@ def search_fusion():
                     i = int(i)
                     if i < 0:
                         continue
-                    web_path, video_id, frame_n_str = get_web_path(image_records[int(i)]['path'])
+                    web_path, video_id, frame_n_str = get_web_path(jina_image_records[int(i)]['path'])
                     if web_path and frame_n_str:
                         frame_n_int = int(frame_n_str)
                         key = (video_id, frame_n_int)
@@ -2712,6 +2730,11 @@ def health():
         "status": "ok" if hybrid_available else "degraded",
         "device": device,
         "records": len(image_records),
+        "metadata": {
+            "frames": len(image_records),
+            "videos": len(metadata_cache),
+            "families": dict(sorted(metadata_family_counts.items())),
+        },
         "local_videos": {
             "available": bool(local_video_index),
             "count": len(local_video_index),
@@ -2749,10 +2772,26 @@ def health():
                 if portable_image_index is not None else []
             ),
         },
-        "jina": {"available": jina_available, "reason": jina_reason},
+        "jina": {
+            "available": jina_available,
+            "reason": jina_reason,
+            "legacy_l_image_vectors": jina_semantic_index.ntotal,
+            "portable_mns_image_vectors": (
+                portable_image_index.ntotal if portable_image_index is not None else 0
+            ),
+            "total_image_vectors": jina_semantic_index.ntotal + (
+                portable_image_index.ntotal if portable_image_index is not None else 0
+            ),
+        },
         "jina_hybrid": {
             "available": hybrid_available,
             "reason": jina_caption_index_reason if jina_available else jina_reason,
+            "legacy_l_caption_vectors": (
+                jina_caption_index.ntotal if jina_caption_index is not None else 0
+            ),
+            "supplemental_mn_caption_vectors": (
+                traffic_search_index.size if traffic_search_index is not None else 0
+            ),
         },
         "ocr": {"available": bm25_ocr_index is not None},
         "asr_for_fusion": {"available": bm25_asr_index is not None},
