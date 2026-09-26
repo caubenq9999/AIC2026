@@ -309,18 +309,18 @@ document.addEventListener('DOMContentLoaded', () => {
     function buildSubmissionDraft() {
         if (!currentSubmissionVideoId) return { error: 'Chọn một video trước khi nộp.' };
         const videoId = currentSubmissionVideoId;
-        const keyframe = getCurrentSubmissionKeyframe();
+        const videoPosition = getCurrentVideoPosition();
         const detailPathForVideo = !detailBox.classList.contains('hidden')
             && keyframeVideoKey(currentDetailPath).toUpperCase() === videoId
             ? currentDetailPath : '';
-        const imagePath = keyframe?.path || detailPathForVideo;
+        const imagePath = videoPosition?.path || detailPathForVideo;
         if (currentSubmissionMode === 'KIS') {
             if (!Number.isFinite(kisStartTime) || !Number.isFinite(kisEndTime)) {
-                return { error: 'Chọn đủ Start và End theo video local, hoặc nhập thủ công.', imagePath };
+                return { error: 'Chọn đủ Start và End theo thời gian video, hoặc nhập thủ công.', imagePath };
             }
             if (kisEndTime < kisStartTime) return { error: 'End không được trước Start.', imagePath };
             return {
-                summary: `${videoId} · ${kisStartTime.toFixed(2)}–${kisEndTime.toFixed(2)} giây local`,
+                summary: `${videoId} · ${kisStartTime.toFixed(2)}–${kisEndTime.toFixed(2)} giây video`,
                 imagePath,
                 payload: { answerSets: [{ answers: [{
                     mediaItemName: videoId,
@@ -332,10 +332,12 @@ document.addEventListener('DOMContentLoaded', () => {
         if (currentSubmissionMode === 'QA') {
             const answer = qaAnswerInput.value.trim();
             if (!answer) return { error: 'Nhập câu trả lời QA.', imagePath };
-            if (!keyframe) return { error: 'Chưa xác định được keyframe local cho QA.', imagePath };
-            const timeMs = Math.round(keyframe.ptsTime * 1000);
+            if (!videoPosition || !Number.isFinite(videoPosition.ptsTime)) {
+                return { error: 'Chưa đọc được thời gian từ video cho QA.', imagePath };
+            }
+            const timeMs = Math.round(videoPosition.ptsTime * 1000);
             return {
-                summary: `${videoId} · ${keyframe.ptsTime.toFixed(2)} giây local · ${answer}`,
+                summary: `${videoId} · ${videoPosition.ptsTime.toFixed(2)} giây video · ${answer}`,
                 imagePath,
                 payload: { answerSets: [{ answers: [{ text: `QA-${answer}-${videoId}-${timeMs}` }] }] },
             };
@@ -466,9 +468,9 @@ document.addEventListener('DOMContentLoaded', () => {
             alert('TRAKE cần ghim cả chuỗi sự kiện từ kết quả TRAKE, không ghim một frame đơn.');
             return;
         }
-        const keyframe = getCurrentSubmissionKeyframe();
-        if (!keyframe) {
-            alert('Chưa xác định được keyframe local tương ứng với video đang phát.');
+        const videoPosition = getCurrentVideoPosition();
+        if (!videoPosition || !Number.isSafeInteger(videoPosition.frameIdx)) {
+            alert('Chưa xác định được frame thật từ thời gian video đang phát.');
             return;
         }
 
@@ -477,10 +479,10 @@ document.addEventListener('DOMContentLoaded', () => {
         prelimPinCurrentFrame.textContent = 'Đang ghim timestamp...';
         try {
             const candidate = {
-                videoId: keyframe.videoId,
-                frameIdx: keyframe.frameIdx,
-                path: keyframe.path || currentDetailPath,
-                ptsTime: keyframe.ptsTime,
+                videoId: videoPosition.videoId,
+                frameIdx: videoPosition.frameIdx,
+                path: videoPosition.path || currentDetailPath,
+                ptsTime: videoPosition.ptsTime,
                 score: 0
             };
             if (addPinnedCandidate(candidate, active.query.type)) {
@@ -927,14 +929,14 @@ document.addEventListener('DOMContentLoaded', () => {
     updateSubmissionUIVisibility();
     // 2. Nút Click của KIS
     kisClickButton.addEventListener('click', () => {
-        const keyframe = getCurrentSubmissionKeyframe();
-        if (!keyframe) {
-            alert('Chưa xác định được keyframe local tương ứng với video đang phát.');
+        const videoPosition = getCurrentVideoPosition();
+        if (!videoPosition || !Number.isFinite(videoPosition.ptsTime)) {
+            alert('Chưa đọc được thời gian từ video đang phát.');
             return;
         }
-        const currentTime = keyframe.ptsTime;
+        const currentTime = videoPosition.ptsTime;
         if (kisStartTime !== null && kisEndTime === null && currentTime < kisStartTime) {
-            alert('End Time không được trước Start Time theo thời gian video local.');
+            alert('End Time không được trước Start Time theo thời gian video.');
             return;
         }
         pauseCurrentPlayback();
@@ -997,14 +999,14 @@ document.addEventListener('DOMContentLoaded', () => {
     });
     // 4. Nút Click của TRAKE
     trakeClickButton.addEventListener('click', () => {
-        const keyframe = getCurrentSubmissionKeyframe();
-        if (!keyframe) {
-            alert('Chưa xác định được frame_idx local tương ứng với video đang phát.');
+        const videoPosition = getCurrentVideoPosition();
+        if (!videoPosition || !Number.isSafeInteger(videoPosition.frameIdx)) {
+            alert('Chưa xác định được frame thật từ thời gian video đang phát.');
             return;
         }
         pauseCurrentPlayback();
 
-        const frameId = keyframe.frameIdx;
+        const frameId = videoPosition.frameIdx;
         if (!trakeFrames.includes(frameId)) { // Chỉ thêm nếu chưa có
             trakeFrames.push(frameId);
             trakeFramesListSpan.textContent = JSON.stringify(trakeFrames);
@@ -1778,18 +1780,20 @@ document.addEventListener('DOMContentLoaded', () => {
         }
     }
 
-    // Player chỉ định vị keyframe gần nhất; thời gian/frame_idx lấy từ metadata local.
+    // Keyframe gần nhất chỉ dùng đồng bộ thumbnail. Thời gian và frame
+    // nộp bài phải bám theo player video, không snap về keyframe thưa.
     function updateRealTimeFrame() {
         const playbackTime = currentPlaybackTime();
         if (playbackTime === null || playbackTime < 0) return;
-        currentPlaybackKeyframe = getCurrentSubmissionKeyframe(playbackTime);
+        currentPlaybackKeyframe = closestTrackedKeyframe(playbackTime);
         syncDetailToPlaybackKeyframe(currentPlaybackKeyframe);
+        const videoPosition = getCurrentVideoPosition(playbackTime);
 
-        currentVideoTimeSpan.textContent = currentPlaybackKeyframe
-            ? currentPlaybackKeyframe.ptsTime.toFixed(2)
+        currentVideoTimeSpan.textContent = videoPosition
+            ? videoPosition.ptsTime.toFixed(2)
             : "N/A";
-        if (currentPlaybackKeyframe) {
-            currentFrameIndexSpan.textContent = currentPlaybackKeyframe.frameIdx;
+        if (videoPosition && Number.isSafeInteger(videoPosition.frameIdx)) {
+            currentFrameIndexSpan.textContent = videoPosition.frameIdx;
         } else if (currentFrameIndexSpan.textContent !== "Đang tải..." && currentFrameIndexSpan.textContent !== "Lỗi") {
             currentFrameIndexSpan.textContent = "N/A";
         }
@@ -2222,7 +2226,7 @@ document.addEventListener('DOMContentLoaded', () => {
         };
     }
 
-    function getCurrentSubmissionKeyframe(playbackTimeOverride = null) {
+    function getCurrentVideoPosition(playbackTimeOverride = null) {
         if (!currentSubmissionVideoId) return null;
         const detailVideoId = document.getElementById('video-name').textContent.trim();
         const detailTime = Number(document.getElementById('meta-pts').textContent);
@@ -2243,7 +2247,6 @@ document.addEventListener('DOMContentLoaded', () => {
             path: currentDetailPath,
         } : null;
 
-        if (currentLoadedInternalMapId !== currentSubmissionVideoId) return detailKeyframe;
         if (currentPlaybackKind === 'local') {
             if (currentLoadedLocalVideoId !== currentSubmissionVideoId) return detailKeyframe;
         } else if (currentPlaybackKind === 'youtube') {
@@ -2266,19 +2269,19 @@ document.addEventListener('DOMContentLoaded', () => {
             : Number(playbackTimeOverride);
         if (!Number.isFinite(playbackTime) || playbackTime < 0) return detailKeyframe;
 
-        // Dùng đúng keyframe mà bộ dò frame lân cận đang chọn, không suy frame_idx từ YouTube × FPS.
-        const keyframe = closestTrackedKeyframe(playbackTime);
-        if (!keyframe || keyframe.videoId !== currentSubmissionVideoId
-            || !Number.isSafeInteger(keyframe.frameIdx) || keyframe.frameIdx < 0) return detailKeyframe;
-        const metadataTime = Number(keyframe.ptsTime);
-        const fallbackTime = currentKeyframeMap.fps
-            ? keyframe.frameIdx / currentKeyframeMap.fps
-            : NaN;
-        const localTime = Number.isFinite(metadataTime) && metadataTime >= 0
-            ? metadataTime
-            : fallbackTime;
-        if (!Number.isFinite(localTime) || localTime < 0) return detailKeyframe;
-        return { ...keyframe, ptsTime: localTime };
+        const keyframe = closestTrackedKeyframe(playbackTime) || detailKeyframe;
+        const fps = Number(currentKeyframeMap.fps);
+        const videoFrameIdx = Number.isFinite(fps) && fps > 0
+            ? Math.max(0, Math.round(playbackTime * fps))
+            : keyframe?.frameIdx;
+        return {
+            videoId: currentSubmissionVideoId,
+            frameN: keyframe?.frameN ?? null,
+            frameIdx: Number.isSafeInteger(videoFrameIdx) ? videoFrameIdx : null,
+            keyframeFrameIdx: keyframe?.frameIdx ?? null,
+            ptsTime: playbackTime,
+            path: keyframe?.path || currentDetailPath,
+        };
     }
 
     function syncDetailToPlaybackKeyframe(keyframe) {

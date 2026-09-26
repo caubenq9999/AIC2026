@@ -192,8 +192,8 @@
                     <div id="real-time-panel" class="real-time-panel hidden">
                         <h4>Thông tin thời gian thực</h4>
                         <p>Video ID: <strong id="realtime-video-id">N/A</strong></p>
-                        <p>Thời gian keyframe local (giây): <strong id="current-video-time">N/A</strong></p>
-                        <p>Frame Index (keyframe): <strong id="current-frame-index">N/A</strong></p>
+                        <p>Thời gian video đang phát (giây): <strong id="current-video-time">N/A</strong></p>
+                        <p>Frame Index (theo video): <strong id="current-frame-index">N/A</strong></p>
                     </div>
                 </div>
 
@@ -206,7 +206,7 @@
 
                     <!-- UI cho QA -->
                     <div id="qa-mode-ui" class="submission-ui hidden">
-                        <p>Video: <span class="submission-video-id">N/A</span> | Thời gian local: <span class="submission-time">N/A</span></p>
+                        <p>Video: <span class="submission-video-id">N/A</span> | Thời gian video: <span class="submission-time">N/A</span></p>
                         <input type="text" id="qa-answer-input" placeholder="Nhập câu trả lời (Answer)...">
                     </div>
 
@@ -220,13 +220,13 @@
                             <input type="number" id="kis-manual-end-input" placeholder="Nhập End (giây)..."/>
                             <button id="kis-manual-set-button">Set (Manual)</button>
                         </div>
-                        <p>Start Time (local): <span id="kis-start-time">N/A</span></p>
-                        <p>End Time (local): <span id="kis-end-time">N/A</span></p>
+                        <p>Start Time (video): <span id="kis-start-time">N/A</span></p>
+                        <p>End Time (video): <span id="kis-end-time">N/A</span></p>
                     </div>
 
                     <!-- UI cho TRAKE -->
                     <div id="trake-mode-ui" class="submission-ui hidden">
-                        <p>Video: <span class="submission-video-id">N/A</span> | Frame Index (keyframe): <span class="submission-frame-idx">N/A</span></p>
+                        <p>Video: <span class="submission-video-id">N/A</span> | Frame Index (theo video): <span class="submission-frame-idx">N/A</span></p>
                         <button id="trake-click-button">Click (Add Frame)</button>
                         <button id="trake-undo-button">Undo</button>
                         <div class="manual-trake-area">
@@ -339,7 +339,7 @@
     </section>
 
     <script src="submission-store.js?v=20260820-10"></script>
-    <script src="script.js?v=20260924-jina-unified-1"></script>
+    <script src="script.js?v=20260926-video-time-1"></script>
     <script src="share_client.js?v=20260821-1"></script>
 </body>
 </html>
